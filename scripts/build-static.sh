@@ -35,7 +35,14 @@ toolchain=$(bash "$repository/toolchain/fetch-musl-toolchain.sh" "$arch")
 prefix=$work/prefix/linux-$arch-musl
 FASTP2P_DEPS_ONLY="${FASTP2P_DEPS_ONLY:-openssl,json-c}" \
   python3 "$repository/toolchain/build-deps.py" "linux-$arch-musl" \
-  --work "$work" --musl-toolchain "$toolchain" --jobs "$jobs" >/dev/null
+  --work "$work" --musl-toolchain "$toolchain" --jobs "$jobs" >/dev/null || {
+    for log in "$work"/gateway-static/build/*/*-configure.log "$work"/build/*/*-configure.log; do
+      [ -f "$log" ] || continue
+      echo "=== $log (tail) ==="
+      tail -25 "$log"
+    done
+    exit 1
+  }
 mkdir -p "$prefix"
 
 export CC="$toolchain/bin/$triple-gcc"
