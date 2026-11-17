@@ -202,7 +202,11 @@
           });
         }); action.append(remove);
       }
-      row.append(action); row.addEventListener('click', () => selectNode(n));
+      row.append(action); row.addEventListener('click', () => {
+        selectNode(n);
+        location.hash = '#/device/' + encodeURIComponent(n.name);
+        showDeviceCrumb(n.name);
+      });
       $('nodes').append(row);
     }
     text('table-count', state.registered); text('nav-count', state.registered);
@@ -698,6 +702,42 @@
       if (view === 'account') { $('account-button').click(); return; }
       window.scrollTo({top: 0, behavior: 'smooth'});
     });
+  // A device has its own address so a page can be linked or reloaded: the hash records
+  // the selection and the breadcrumb takes the operator back to the list.
+  function deviceFromHash() {
+    const match = /^#\/device\/(.+)$/.exec(location.hash || '');
+    return match ? decodeURIComponent(match[1]) : '';
+  }
+  function showDeviceCrumb(name) {
+    const crumb = $('device-crumb');
+    if (!crumb) return;
+    crumb.hidden = !name;
+    if (name) text('device-crumb-name', name + ' 的端口转发');
+  }
+  function openDevicePage(name, scroll) {
+    const node = (state.nodes || []).find(n => n.name === name);
+    if (!node) return false;
+    selectNode(node);
+    showDeviceCrumb(name);
+    if (scroll) {
+      const panel = document.querySelector('.rules-panel');
+      if (panel) panel.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }
+    return true;
+  }
+  $('device-back').addEventListener('click', () => {
+    if (location.hash) location.hash = '';
+    else { showDeviceCrumb(''); window.scrollTo({top: 0, behavior: 'smooth'}); }
+  });
+  window.addEventListener('hashchange', () => {
+    const name = deviceFromHash();
+    if (name) openDevicePage(name, true);
+    else showDeviceCrumb('');
+  });
+  document.addEventListener('fastp2p:nodes', () => {
+    const name = deviceFromHash();
+    if (name && openDevicePage(name, false)) showDeviceCrumb(name);
+  });
   $('logout').addEventListener('click', () => logout()); $('refresh').addEventListener('click', refresh);
   $('overview-nav').addEventListener('click', () => window.scrollTo({top: 0, behavior: 'smooth'}));
   let searchTimer;

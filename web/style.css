@@ -68,3 +68,7 @@
 .topnav-item:hover{background:#f2f5f8;color:#46566c}
 .topnav-item.active{background:#e4f4ef;color:var(--accent)}
 @media(max-width:560px){.topnav{gap:0}.topnav-item{padding:7px 10px;font-size:12px}}
+
+/* device breadcrumb */
+.device-crumb{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.device-crumb-name{font-size:13px;font-weight:600;color:#54657c}
