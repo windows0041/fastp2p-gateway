@@ -6,7 +6,7 @@ WORKDIR /source
 COPY common ./common
 COPY client-scripts/linux-installer.sh client-scripts/fastp2p-service.sh ./client-scripts/
 COPY . ./
-RUN cmake -S c/gateway -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+RUN cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
     && cmake --build /build --parallel 2 \
     && cmake --install /build --prefix /opt/fastp2p
 
