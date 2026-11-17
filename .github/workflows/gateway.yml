@@ -1,0 +1,113 @@
+name: fastp2p gateway
+on:
+  push:
+    tags: ['fastp2p-gateway-v*']
+    branches: ['**']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: gateway-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    # What this job proves: the tree compiles, the binary answers, and the console
+    # assets embed. The cross-repository integration suites (which need a client
+    # binary from the fastp2p repository) are added separately so a client release
+    # cannot make this repository red for reasons of its own.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config libwebsockets-dev libjson-c-dev libssl-dev libsqlite3-dev zstd
+      - uses: actions/checkout@v5
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 4
+      - name: Version and console assets
+        run: |
+          ./build/fastp2p-gateway --version
+          strings ./build/fastp2p-gateway | grep -q 'rule-no-relay' && echo 'console option embedded'
+  static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - name: Build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ninja-build python3 qemu-user-static file
+      - uses: actions/checkout@v5
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/musl-cross
+            ~/fastp2p-dev
+          key: gateway-static-${{ matrix.arch }}-${{ hashFiles('scripts/build-static.sh') }}
+      - name: Build the static gateway
+        run: FASTP2P_STATIC_OUT="$PWD/dist" bash scripts/build-static.sh ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fastp2p-gateway-linux-static-${{ matrix.arch }}
+          path: dist/fastp2p-gateway-linux-static-${{ matrix.arch }}.tar.gz
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and package the image
+        run: |
+          docker build -f Dockerfile -t fastp2p-gateway:test .
+          docker run --rm fastp2p-gateway:test --version
+          version=$(sed -n 's/.*project(fastp2p_c_gateway VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          docker tag fastp2p-gateway:test "fastp2p-gateway:$version"
+          mkdir -p dist
+          docker save "fastp2p-gateway:$version" | gzip -n > dist/fastp2p-gateway-docker-amd64.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fastp2p-gateway-docker-amd64
+          path: dist/fastp2p-gateway-docker-amd64.tar.gz
+      - name: Boot with a private TLS certificate
+        run: |
+          bash scripts/tls/generate-cert.sh "$RUNNER_TEMP/tls" localhost 127.0.0.1 > "$RUNNER_TEMP/cert.log" 2>&1
+          mkdir -p "$RUNNER_TEMP/state"
+          docker run -d --name gateway-test --user "$(id -u):$(id -g)" \
+            -e FASTP2P_USER=ci-admin -e FASTP2P_PASSWORD=ci-only-fixture-password -e FASTP2P_TOKEN=1234567890123456 \
+            -v "$RUNNER_TEMP/tls/server.crt:/etc/fastp2p/tls/server.crt:ro" \
+            -v "$RUNNER_TEMP/tls/server.key:/etc/fastp2p/tls/server.key:ro" \
+            -v "$RUNNER_TEMP/tls/ca.crt:/etc/fastp2p/tls/ca.crt:ro" \
+            -v "$RUNNER_TEMP/state:/var/lib/fastp2p" \
+            -p 127.0.0.1:10008:10008 fastp2p-gateway:test
+          for attempt in $(seq 1 40); do
+            if curl -fsS --cacert "$RUNNER_TEMP/tls/ca.crt" https://127.0.0.1:10008/healthz; then exit 0; fi
+            sleep 0.25
+          done
+          docker logs gateway-test
+          exit 1
+      - name: Stop the test container
+        if: always()
+        run: docker rm -f gateway-test || true
+  release:
+    needs: [static, docker]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/fastp2p-gateway-v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: fastp2p-gateway-*
+          path: release-input
+      - name: Publish verified gateway packages
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/publish-release.py --kind gateway --input release-input --output release-output
