@@ -30,15 +30,19 @@
         <a class="nav-item" href="https://github.com/windows0041/fastp2p/releases" target="_blank" rel="noopener noreferrer"><span aria-hidden="true">↓</span> 版本与下载 <span class="external" aria-hidden="true">↗</span></a>
       </nav><div class="sidebar-foot"><span class="dot"></span><span>自己的网关，自己的连接<small id="sidebar-version">C Gateway</small></span></div>
     </aside>
-    <div class="workspace"><header class="topbar"><div class="breadcrumb">工作空间 <span>/</span> <strong>网络总览</strong></div><nav class="topnav" aria-label="主导航"><button type="button" class="topnav-item active" data-view="devices">设备</button><button type="button" class="topnav-item" data-view="install">安装</button><button type="button" class="topnav-item" data-view="account">我</button></nav><div class="account"><span id="account-name"></span><button id="account-button" class="button quiet" type="button">账号设置</button><button id="token-button" class="button quiet" type="button">安装 Token</button><button id="logout" class="button quiet" type="button">退出</button></div></header>
-      <main><div id="view-devices" class="view">
-<section class="page-heading"><div><span class="eyebrow">NETWORK OVERVIEW</span><h1>网络总览</h1><p class="muted">在线状态与离线记录，一目了然。</p></div><div class="heading-actions"><span class="live-status" id="gateway-status"><span class="dot"></span><span id="gateway-label">网关在线</span></span><button id="refresh" class="button" type="button">↻ 刷新</button></div></section>
+    <div class="workspace"><header class="topbar"><div class="breadcrumb">工作空间 <span>/</span> <strong>网络总览</strong></div><div class="account"><span id="account-name"></span><button id="account-button" class="button quiet" type="button">账号设置</button><button id="token-button" class="button quiet" type="button">安装 Token</button><button id="logout" class="button quiet" type="button">退出</button></div></header>
+      <main><div id="view-overview" class="view">
+<section class="page-heading"><div><span class="eyebrow">NETWORK</span><h2>网络总览</h2><p>网关状态与在线节点概况。</p></div></section>
 <section class="metrics" aria-label="网关状态">
           <article class="metric"><div class="metric-label">在线节点 <span class="metric-icon mint">◉</span></div><div class="metric-value"><span id="online-count">—</span><small id="capacity">/ —</small></div><p>当前连接到此网关的设备</p></article>
           <article class="metric"><div class="metric-label">运行时间 <span class="metric-icon blue">◷</span></div><div id="uptime" class="metric-value">—</div><p>本次网关进程持续运行</p></article>
           <article class="metric"><div class="metric-label">控制队列 <span class="metric-icon violet">≋</span></div><div id="queue" class="metric-value">—</div><p id="queue-limit">等待发送的控制消息</p></article>
           <article class="metric"><div class="metric-label">网关版本 <span class="metric-icon amber">⌘</span></div><div id="version" class="metric-value">—</div><p id="wss-port">C 实现 · HTTPS / WSS</p></article>
         </section>
+</div>
+<div id="view-devices" class="view">
+<section class="page-heading"><div><span class="eyebrow">NETWORK OVERVIEW</span><h1>网络总览</h1><p class="muted">在线状态与离线记录，一目了然。</p></div><div class="heading-actions"><span class="live-status" id="gateway-status"><span class="dot"></span><span id="gateway-label">网关在线</span></span><button id="refresh" class="button" type="button">↻ 刷新</button></div></section>
+
 <section class="panel nodes-panel"><div class="panel-heading"><div><h2>已登记节点 <span class="count-badge" id="table-count">0</span></h2><p>选择设备，查看或管理它的转发规则。</p></div><label class="search"><span class="sr-only">搜索节点</span><span aria-hidden="true">⌕</span><input id="node-search" type="search" maxlength="63" placeholder="搜索节点、IP 或系统" autocomplete="off"></label></div>
           <div class="table-scroll"><table class="node-table"><thead><tr><th>节点</th><th>公网地址（v4 / v6）</th><th>内网地址</th><th>NAT（UDP/TCP × v4/v6）</th><th>客户端版本</th><th>状态</th><th>最近活跃</th><th><span class="sr-only">操作</span></th></tr></thead><tbody id="nodes"></tbody></table></div>
           <div id="nodes-empty" class="empty-state" hidden><span class="empty-icon" aria-hidden="true">◇</span><h3>还没有在线节点</h3><p>让客户端使用此网关的地址、CA 和安装 Token 连接。</p></div>
@@ -96,5 +100,6 @@
   </form></dialog>
   <dialog id="confirm-dialog"><form id="confirm-form"><div class="dialog-heading"><h2 id="confirm-title">确认操作</h2></div><p id="confirm-description"></p><div class="dialog-actions"><button id="cancel-confirm" class="button" type="button">取消</button><button id="confirm-action" class="button danger" type="submit">确认</button></div></form></dialog>
   
+<nav class="bottomnav" aria-label="主导航"><button type="button" class="bottomnav-item active" data-view="overview">网络总览</button><button type="button" class="bottomnav-item" data-view="devices">设备</button><button type="button" class="bottomnav-item" data-view="install">安装</button><button type="button" class="bottomnav-item" data-view="account">我</button></nav>
 </body>
 </html>

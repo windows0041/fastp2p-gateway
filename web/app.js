@@ -694,13 +694,14 @@
   for (const tab of document.querySelectorAll('.install-tab'))
     tab.addEventListener('click', () => selectInstallTab(tab.dataset.platform));
   // Top navigation drives the existing views and dialogs; the console stays one page.
-  for (const item of document.querySelectorAll('.topnav-item'))
+  for (const item of document.querySelectorAll('.bottomnav-item'))
     item.addEventListener('click', () => {
       for (const other of document.querySelectorAll('.topnav-item'))
         other.classList.toggle('active', other === item);
       const view = item.dataset.view;
       if (view === 'install') { location.hash = '#/install'; return; }
       if (view === 'account') { location.hash = '#/mine'; return; }
+      if (view === 'overview') { location.hash = '#/overview'; return; }
       location.hash = '#/devices';
     });
   // A device has its own address so a page can be linked or reloaded: the hash records
@@ -736,15 +737,16 @@
     else showDeviceCrumb('');
   });
   // ---- pages ---------------------------------------------------------------
-  const PAGES = ['devices', 'device', 'install', 'mine'];
+  const PAGES = ['overview', 'devices', 'device', 'install', 'mine'];
   function showView(name) {
     for (const page of PAGES) {
       const el = $('view-' + page);
       if (el) el.hidden = page !== name;
     }
-    for (const item of document.querySelectorAll('.topnav-item'))
+    for (const item of document.querySelectorAll('.bottomnav-item'))
       item.classList.toggle('active',
-        item.dataset.view === (name === 'device' ? 'devices' : name === 'mine' ? 'account' : name));
+        item.dataset.view === (name === 'device' ? 'devices' :
+                               name === 'mine' ? 'account' : name));
   }
   function renderInstallPage() {
     const android = $('android-install');
@@ -761,7 +763,7 @@
     text('mine-token', state.installToken || '—');
   }
   function route() {
-    const hash = location.hash || '#/devices';
+    const hash = location.hash || '#/overview';
     const device = /^#\/device\/(.+)$/.exec(hash);
     if (device) {
       const name = decodeURIComponent(device[1]);
@@ -772,6 +774,7 @@
     }
     if (hash === '#/install') { showView('install'); renderInstallPage(); return; }
     if (hash === '#/mine') { showView('mine'); renderMinePage(); return; }
+    if (hash === '#/overview' || hash === '#/') { showView('overview'); return; }
     showView('devices');
   }
   function renderDevicePage(node) {
