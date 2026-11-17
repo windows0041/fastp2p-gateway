@@ -30,7 +30,7 @@ jobs:
       - name: Version and console assets
         run: |
           ./build/fastp2p-gateway --version
-          strings ./build/fastp2p-gateway | grep -q 'rule-no-relay' && echo 'console option embedded'
+          grep -aq 'rule-no-relay' ./build/fastp2p-gateway && echo 'console assets embedded'
   static:
     runs-on: ubuntu-24.04
     timeout-minutes: 45

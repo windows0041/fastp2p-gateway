@@ -8,7 +8,7 @@
 #
 # Usage: build-static.sh [x86_64|aarch64] [--out DIR] [--work DIR]
 set -euo pipefail
-repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
+repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 arch=${1:-x86_64}
 shift || true
 out=${FASTP2P_STATIC_OUT:-$repository/dist}
@@ -29,11 +29,11 @@ case "$arch" in
   *) echo "unsupported architecture: $arch" >&2; exit 2 ;;
 esac
 # Same pinned toolchain the client uses, fetched on demand.
-toolchain=$(bash "$repository/c/client/scripts/fetch-musl-toolchain.sh" "$arch")
+toolchain=$(bash "$repository/toolchain/fetch-musl-toolchain.sh" "$arch")
 
 # The client recipe already builds OpenSSL and json-c for this target.
 prefix=$work/prefix/linux-$arch-musl
-python3 "$repository/c/client/scripts/build-deps.py" "linux-$arch-musl" \
+python3 "$repository/toolchain/build-deps.py" "linux-$arch-musl" \
   --work "$work" --musl-toolchain "$toolchain" --jobs "$jobs" >/dev/null
 mkdir -p "$prefix"
 
@@ -100,7 +100,7 @@ export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig"
 export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
 cmake -S "$repository/c/gateway" -B "$work/build-gateway-$arch" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
-  -DCMAKE_TOOLCHAIN_FILE="$repository/c/client/cmake/linux-musl.cmake" \
+  -DCMAKE_TOOLCHAIN_FILE="$repository/toolchain/linux-musl.cmake" \
   -DFASTP2P_TARGET_ARCH="$arch" \
   -DCMAKE_C_COMPILER="$CC" -DCMAKE_AR="$AR" -DCMAKE_RANLIB="$RANLIB" \
   -DCMAKE_EXE_LINKER_FLAGS=-static \
