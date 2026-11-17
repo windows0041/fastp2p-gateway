@@ -150,7 +150,7 @@ elif args.target.endswith('-musl'):
     environment['RANLIB']=str(ranlib)
     environment['CFLAGS']=('-O2 -fPIC '+arch_flags).strip()
     environment['LDFLAGS']='-static'
-    cmake_common+=['-DCMAKE_TOOLCHAIN_FILE='+str(project/'cmake/linux-musl.cmake'),
+    cmake_common+=['-DCMAKE_TOOLCHAIN_FILE='+str(project/'toolchain/linux-musl.cmake'),
                    '-DFASTP2P_TARGET_ARCH='+arch,
                    '-DCMAKE_C_COMPILER='+str(compiler),
                    '-DCMAKE_AR='+str(archiver),
