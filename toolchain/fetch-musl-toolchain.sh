@@ -28,7 +28,8 @@ if [[ -x $toolchain/bin/$triple-gcc ]]; then
 fi
 
 mkdir -p "$root"
-base=${FASTP2P_TOOLCHAIN_BASE:-https://github.com/windows0041/fastp2p/releases/download/musl-toolchains}
+# The archives are published once and shared by every repository that needs them.
+base=${FASTP2P_TOOLCHAIN_BASE:-https://github.com/windows0041/oldfastp2p/releases/download/musl-toolchains}
 name=$triple-cross.tar.gz
 expected=$(awk -v n="$name" '$2 == n { print $1 }' \
   "$repository/toolchain/musl-toolchains.txt" 2>/dev/null || true)
