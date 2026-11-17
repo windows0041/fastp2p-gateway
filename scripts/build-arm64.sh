@@ -61,7 +61,6 @@ mkdir -p "$out"
 cp "$repository/README.md" "$repository/VALIDATION-ZH.md" \
    "$repository/THIRD_PARTY.md" "$repository/LICENSE" \
    "$repository/.env.example" "$out/c-gateway-debian-arm64/"
-cp "$repository/NODE-STORAGE-ZH.md" "$out/c-gateway-debian-arm64/"
 cp -R "$repository/deploy" "$out/c-gateway-debian-arm64/"
 mkdir -p "$out/c-gateway-debian-arm64/scripts"
 cp "$repository/scripts/tls/generate-cert.sh" "$out/c-gateway-debian-arm64/scripts/"

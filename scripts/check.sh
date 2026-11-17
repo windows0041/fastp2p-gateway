@@ -19,7 +19,7 @@ bash "$repository/scripts/tls/generate-cert.sh" "$runtime/certs" localhost 127.0
 exec unshare --net bash -c '
   set -euo pipefail
   ip link set lo up
-  python3 "$1/c/gateway/tests/protocol_integration.py" --gateway "$2" --cert-dir "$3/certs" --logs "$3/logs"
-  python3 "$1/c/gateway/tests/dualstack_integration.py" --gateway "$2" --cert-dir "$3/certs" --logs "$3/dualstack"
-  exec python3 "$1/c/gateway/tests/admin_integration.py" --gateway "$2" --cert-dir "$3/certs" --logs "$3/admin-logs"
+  python3 "$1/../tests/protocol_integration.py" --gateway "$2" --cert-dir "$3/certs" --logs "$3/logs"
+  python3 "$1/../tests/dualstack_integration.py" --gateway "$2" --cert-dir "$3/certs" --logs "$3/dualstack"
+  exec python3 "$1/../tests/admin_integration.py" --gateway "$2" --cert-dir "$3/certs" --logs "$3/admin-logs"
 ' _ "$repository" "$build/fastp2p-gateway" "$runtime"

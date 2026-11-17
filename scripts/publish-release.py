@@ -98,7 +98,7 @@ def publish(kind, files, repository, sha, ref, ref_type, run_id, token, explicit
     api = GitHub(repository, token)
     if stable:
         tag_sha = subprocess.check_output(['git', 'rev-parse', tag + '^{commit}'], text=True).strip()
-        paths = (['c/common','c/gateway/src','c/gateway/web','c/gateway/deploy','CMakeLists.txt','c/gateway/scripts/embed-web.py','c/gateway/Dockerfile'] if kind=='gateway' else
+        paths = (['common','src','web','deploy','CMakeLists.txt','scripts/embed-web.py','Dockerfile'] if kind=='gateway' else
                  ['c/common','c/client/src','c/client/include','c/client/cmake','c/client/platform','c/client/deps.lock.json','CMakeLists.txt','c/client/android/app/src/main','c/client/android/app/src/androidTest','c/client/android/jni','c/client/android/app/build.gradle','c/client/android/build.gradle','c/client/android/settings.gradle','c/client/android/gradle.properties','c/client/android/gradle'])
         if subprocess.run(['git','diff','--quiet',sha,tag_sha,'--',*paths]).returncode:
             raise RuntimeError('Tag runtime source differs from the tested build')

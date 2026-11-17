@@ -121,7 +121,6 @@ cmake --install "$work/build-gateway-$arch" --prefix "$stage" >/dev/null
 cp "$repository/README.md" "$repository/VALIDATION-ZH.md" \
    "$repository/THIRD_PARTY.md" "$repository/LICENSE" \
    "$repository/.env.example" "$stage/"
-cp "$repository/NODE-STORAGE-ZH.md" "$stage/"
 cp -R "$repository/deploy" "$stage/"
 mkdir -p "$stage/scripts"
 cp "$repository/scripts/tls/generate-cert.sh" "$stage/scripts/"
