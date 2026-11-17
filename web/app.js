@@ -137,8 +137,8 @@
       const seen = element('td', 'mono');
       seen.append(document.createTextNode(n.activetime ? String(n.activetime) : '—'));
       row.append(seen);
-      const action = element('td'), button = element('button', 'link-button', active ? '查看规则 →' : '查看记录 →');
-      button.type = 'button'; button.setAttribute('aria-label', '查看 ' + n.name + ' 的规则');
+      const action = element('td'), button = element('button', 'link-button', active ? '编辑' : '查看记录');
+      button.type = 'button'; button.setAttribute('aria-label', '编辑 ' + n.name);
       button.addEventListener('click', event => { event.stopPropagation(); goToDevice(n.name); });
       action.append(button);
       /* Jump straight to this device's forwarding rules instead of making the
