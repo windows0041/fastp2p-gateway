@@ -33,7 +33,8 @@ toolchain=$(bash "$repository/toolchain/fetch-musl-toolchain.sh" "$arch")
 
 # The client recipe already builds OpenSSL and json-c for this target.
 prefix=$work/prefix/linux-$arch-musl
-python3 "$repository/toolchain/build-deps.py" "linux-$arch-musl" \
+FASTP2P_DEPS_ONLY="${FASTP2P_DEPS_ONLY:-openssl,json-c}" \
+  python3 "$repository/toolchain/build-deps.py" "linux-$arch-musl" \
   --work "$work" --musl-toolchain "$toolchain" --jobs "$jobs" >/dev/null
 mkdir -p "$prefix"
 

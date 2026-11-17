@@ -191,9 +191,18 @@ def cmake(name,options):
     run(['cmake','--build',directory,'--parallel',str(args.jobs)],build,name+'-build')
     run(['cmake','--install',directory],build,name+'-install')
 
-cmake('ngtcp2',ssl+['-DENABLE_LIB_ONLY=ON','-DENABLE_SHARED_LIB=OFF','-DENABLE_STATIC_LIB=ON',
+# Callers that need a subset (the gateway links neither QUIC nor libcurl) can name
+# the components they want; an empty value keeps the historical behaviour.
+only = {name.strip() for name in os.environ.get('FASTP2P_DEPS_ONLY', '').split(',') if name.strip()}
+
+def wanted(name):
+    return not only or name in only
+
+if wanted('ngtcp2'):
+    cmake('ngtcp2',ssl+['-DENABLE_LIB_ONLY=ON','-DENABLE_SHARED_LIB=OFF','-DENABLE_STATIC_LIB=ON',
                   '-DENABLE_GNUTLS=OFF','-DENABLE_OPENSSL=ON'])
-cmake('json-c',['-DDISABLE_WERROR=ON','-DBUILD_APPS=OFF','-DENABLE_THREADING=OFF'])
+if wanted('json-c'):
+    cmake('json-c',['-DDISABLE_WERROR=ON','-DBUILD_APPS=OFF','-DENABLE_THREADING=OFF'])
 curl=['-DBUILD_CURL_EXE=OFF','-DBUILD_EXAMPLES=OFF','-DBUILD_LIBCURL_DOCS=OFF','-DBUILD_MISC_DOCS=OFF',
       '-DCURL_DISABLE_LDAP=ON','-DCURL_DISABLE_LDAPS=ON',
       '-DUSE_LIBIDN2=OFF','-DCURL_USE_LIBPSL=OFF','-DCURL_BROTLI=OFF','-DCURL_ZSTD=OFF','-DCURL_ZLIB=OFF',
@@ -205,6 +214,7 @@ else:
     curl+=ssl+['-DCURL_USE_OPENSSL=ON']
     if args.target.startswith('macos-'): curl+=['-DCURL_USE_SECTRUST=ON']
     if args.target.startswith('android-'): curl+=['-DCURL_CA_PATH=/system/etc/security/cacerts']
-cmake('curl',curl)
+if wanted('curl'):
+    cmake('curl',curl)
 stamp.write_text(json.dumps(fingerprint,indent=2)+'\n')
 print('Dependency prefix:',prefix,flush=True)
