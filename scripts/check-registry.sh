@@ -8,4 +8,4 @@ exec unshare --net --uts bash -c '
   set -euo pipefail
   ip link set lo up
   exec python3 "$@"
-' _ "$repository/c/gateway/tests/registry_integration.py" --gateway "$gateway" --client "$client" "$@"
+' _ "$repository/tests/registry_integration.py" --gateway "$gateway" --client "$client" "$@"

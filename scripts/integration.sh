@@ -15,5 +15,5 @@ exec unshare --net bash -c '
   set -euo pipefail
   ip link set lo up
   exec python3 "$@"
-' _ "$repository/c/client/tests/integration.py" --gateway "$gateway" \
+' _ "$repository/client/tests/integration.py" --gateway "$gateway" \
   --c-client "$client" --cert-dir "$runtime/certs" --logs "$runtime/logs" "$@"
