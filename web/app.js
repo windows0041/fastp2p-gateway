@@ -241,7 +241,9 @@
       text('uptime', uptime(status.uptimeSeconds)); text('queue', bytes(status.queuedBytes));
       text('queue-limit', '上限 ' + bytes(status.queueLimitBytes)); text('version', status.version);
       text('sidebar-version', 'C Gateway ' + status.version); text('wss-port', 'WSS :' + status.wssPort + ' · HTTPS');
-      text('account-name', status.user); text('updated-at', '更新于 ' + new Date().toLocaleTimeString('zh-CN', {hour12: false}));
+      state.user = status.user;
+    const accountLabel = $('account-name');
+    if (accountLabel) accountLabel.textContent = status.user; text('updated-at', '更新于 ' + new Date().toLocaleTimeString('zh-CN', {hour12: false}));
       if (state.selected) {
         const selected = state.nodes.find(n => n.name === state.selected.name);
         if (!selected) selectNode(null);
@@ -760,7 +762,7 @@
     selectInstallTab('windows');
   }
   function renderMinePage() {
-    text('mine-account', state.token ? String(state.token).slice(0, 12) + '…' : '—');
+    text('mine-account', state.user || '—');
     text('mine-token', state.installToken || '—');
   }
   function route() {
@@ -805,7 +807,6 @@
   route();
   $('device-back-inline').addEventListener('click', () => { location.hash = '#/devices'; });
   $('mine-account-edit').addEventListener('click', () => $('account-dialog').showModal());
-  $('mine-logout').addEventListener('click', () => logout());
   $('side-logout').addEventListener('click', () => logout()); $('refresh').addEventListener('click', refresh);
   $('overview-nav').addEventListener('click', () => window.scrollTo({top: 0, behavior: 'smooth'}));
   let searchTimer;
