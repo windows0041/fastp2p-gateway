@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import platform
 import subprocess
@@ -185,9 +186,14 @@ ssl=['-DOPENSSL_ROOT_DIR='+str(prefix),'-DOPENSSL_INCLUDE_DIR='+str(prefix/'incl
      '-DOPENSSL_SSL_LIBRARY='+str(prefix/'lib/libssl.a'),'-DOPENSSL_CRYPTO_LIBRARY='+str(prefix/'lib/libcrypto.a'),
      '-DOPENSSL_USE_STATIC_LIBS=TRUE']
 
+# CMake needs to be told which ninja to use: the recipe configures with -G Ninja
+# but the environment handed to the build can hide the runner's ninja.
+make_program = os.environ.get('CMAKE_MAKE_PROGRAM') or shutil.which('ninja') or ''
+
 def cmake(name,options):
     directory=build/name
-    run(['cmake','-S',paths[name],'-B',directory,'-U_OPENSSL_*','-UHAVE_SSL_*',*cmake_common,*options],build,name+'-configure')
+    extra = ['-DCMAKE_MAKE_PROGRAM=' + make_program] if make_program else []
+    run(['cmake','-S',paths[name],'-B',directory,'-U_OPENSSL_*','-UHAVE_SSL_*',*extra,*cmake_common,*options],build,name+'-configure')
     run(['cmake','--build',directory,'--parallel',str(args.jobs)],build,name+'-build')
     run(['cmake','--install',directory],build,name+'-install')
 
