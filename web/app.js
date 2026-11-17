@@ -606,7 +606,7 @@
     finally { $('confirm-action').disabled = false; state.confirm = null; }
   });
   $('token-button').addEventListener('click', () => {
-    $('install-token').value = state.installToken; $('install-token').type = 'password'; $('android-install').href = 'intent://install?token=' + encodeURIComponent(state.installToken) + '#Intent;scheme=fastp2p;package=top.fastp2p.cclient;end'; text('reveal-token', '显示'); $('token-dialog').showModal();
+    $('install-token').value = state.installToken; $('install-token').type = 'password'; $('android-install').href = 'intent://install?token=' + encodeURIComponent(state.installToken) + '#Intent;scheme=fastp2p;package=top.fastp2p.cclient;end'; text('reveal-token', '显示'); selectInstallTab('windows'); $('token-dialog').showModal();
   });
   $('reveal-token').addEventListener('click', () => {
     const hidden = $('install-token').type === 'password'; $('install-token').type = hidden ? 'text' : 'password'; text('reveal-token', hidden ? '隐藏' : '显示');
@@ -617,6 +617,42 @@
   });
   $('token-dialog').addEventListener('close', () => { $('install-token').value = ''; $('android-install').removeAttribute('href'); text('copy-token', '复制 Token'); });
   $('close-token').addEventListener('click', () => $('token-dialog').close());
+  // Which build is offered for a platform: the console already tracks the packages
+  // it has synced or uploaded, so the install page is just a filtered view of them.
+  function installPlatforms() {
+    return ['windows', 'macos', 'linux', 'android'];
+  }
+  function renderInstall(platform) {
+    const list = $('install-list');
+    if (!list) return;
+    const wanted = (state.updates || []).filter(u =>
+      u.platform === platform || String(u.platform).startsWith(platform + '-'));
+    if (!wanted.length) {
+      list.replaceChildren(element('p', 'muted install-empty',
+        '暂无该平台的安装包，请先在「客户端升级」里同步或上传。'));
+      return;
+    }
+    list.replaceChildren(...wanted.map(update => {
+      const row = element('div', 'install-row');
+      const label = update.label || update.platform || platform;
+      row.append(element('span', 'install-label', label + ' · ' + update.version));
+      const button = element('button', 'button primary', '下载');
+      button.type = 'button';
+      button.setAttribute('aria-label', '下载 ' + label + ' ' + update.version);
+      button.addEventListener('click', () => downloadInstaller(update, button));
+      row.append(button);
+      return row;
+    }));
+  }
+  function selectInstallTab(platform) {
+    for (const tab of document.querySelectorAll('.install-tab'))
+      tab.classList.toggle('active', tab.dataset.platform === platform);
+    for (const tab of document.querySelectorAll('.install-tab'))
+      tab.setAttribute('aria-selected', tab.dataset.platform === platform ? 'true' : 'false');
+    renderInstall(platform);
+  }
+  for (const tab of document.querySelectorAll('.install-tab'))
+    tab.addEventListener('click', () => selectInstallTab(tab.dataset.platform));
   $('logout').addEventListener('click', () => logout()); $('refresh').addEventListener('click', refresh);
   $('overview-nav').addEventListener('click', () => window.scrollTo({top: 0, behavior: 'smooth'}));
   let searchTimer;
