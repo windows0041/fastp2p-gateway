@@ -211,6 +211,12 @@
     }
     text('table-count', state.registered); text('nav-count', state.registered);
     text('search-count', query ? `匹配 ${state.total} / ${state.registered} 个节点` : `共 ${state.registered} 个已登记节点`);
+    // Reloading #/device/<name> reopens that device once the rows exist.
+    const wanted = deviceFromHash();
+    if (wanted && state.selected?.name !== wanted) {
+      const match = (state.nodes || []).find(n => n.name === wanted);
+      if (match) { selectNode(match); showDeviceCrumb(wanted); }
+    } else if (wanted) showDeviceCrumb(wanted); // restored from the address
     text('node-page', state.total ? `${state.offset + 1}–${state.offset + state.nodes.length} / ${state.total}` : '0 / 0');
     $('previous-nodes').disabled = !state.offset;
     $('next-nodes').disabled = state.offset + 100 >= state.total;
@@ -733,10 +739,6 @@
     const name = deviceFromHash();
     if (name) openDevicePage(name, true);
     else showDeviceCrumb('');
-  });
-  document.addEventListener('fastp2p:nodes', () => {
-    const name = deviceFromHash();
-    if (name && openDevicePage(name, false)) showDeviceCrumb(name);
   });
   $('logout').addEventListener('click', () => logout()); $('refresh').addEventListener('click', refresh);
   $('overview-nav').addEventListener('click', () => window.scrollTo({top: 0, behavior: 'smooth'}));
