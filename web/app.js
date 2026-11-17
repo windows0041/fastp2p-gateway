@@ -153,6 +153,24 @@
         if (panel) panel.scrollIntoView({behavior: 'smooth', block: 'start'});
       });
       action.append(forward);
+      /* Restart through the upgrade channel: the same build is re-installed, so the
+       * client comes back up without any new protocol on either side. */
+      if (active && n.version) {
+        const restart = element('button', 'link-button', '重启');
+        restart.type = 'button';
+        restart.setAttribute('aria-label', '重启 ' + n.name);
+        restart.addEventListener('click', event => {
+          event.stopPropagation();
+          confirm('重启客户端', n.name + ' 将重新安装当前版本并重启，连接会短暂中断。', async () => {
+            await api('/api/v1/device/' + encodeURIComponent(n.name) + '/upgrade',
+                      {version: n.version});
+            await new Promise(resolve => setTimeout(resolve, 800));
+            await refresh();
+            return '重启指令已发送到 ' + n.name + '。';
+          });
+        });
+        action.append(restart);
+      }
       const latest = latestFor(platformForOs(n.os));
       if (active && latest && compareVersions(n.version, latest) < 0) {
         const upgrade = element('button', 'link-button', '升级到 ' + latest); upgrade.type = 'button';
