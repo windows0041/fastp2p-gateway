@@ -93,3 +93,7 @@
 1	25	1794914034447473313	/home/maoyu/gwsplit/fastp2p-gateway/build2/web_assets.h	add5c5d713afe9e4
 25	843	1794914034447473313	CMakeFiles/fastp2p-gateway.dir/src/gateway.c.o	291c512fd3e7e34b
 843	922	1794914035264886953	fastp2p-gateway	491ca80333ed4ec3
+2	26	1794914377942574299	web_assets.h	add5c5d713afe9e4
+2	26	1794914377942574299	/home/maoyu/gwsplit/fastp2p-gateway/build2/web_assets.h	add5c5d713afe9e4
+27	848	1794914377942574299	CMakeFiles/fastp2p-gateway.dir/src/gateway.c.o	291c512fd3e7e34b
+848	946	1794914378760884632	fastp2p-gateway	491ca80333ed4ec3

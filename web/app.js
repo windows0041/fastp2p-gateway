@@ -530,7 +530,8 @@
     } catch (error) { text('login-error', error.message); $('login-error').hidden = false; }
     finally { $('login-submit').disabled = false; }
   });
-  $('account-button').addEventListener('click', () => {
+  const accountTrigger = $('account-button');
+  if (accountTrigger) accountTrigger.addEventListener('click', () => {
     $('account-form').reset(); $('account-error').hidden = true;
     $('account-user').value = $('account-name').textContent;
     $('account-dialog').showModal();
@@ -801,6 +802,7 @@
     }));
   }
   window.addEventListener('hashchange', route);
+  route();
   $('device-back-inline').addEventListener('click', () => { location.hash = '#/devices'; });
   $('mine-account-edit').addEventListener('click', () => $('account-dialog').showModal());
   $('mine-logout').addEventListener('click', () => logout());
