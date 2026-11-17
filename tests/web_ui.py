@@ -1,0 +1,394 @@
+#!/usr/bin/env python3
+"""Browser test against the compiled gateway and disposable WSS node fixtures.
+
+Windows may launch the Linux gateway in WSL with --wsl. Browser certificate
+exceptions apply only to this isolated fixture context, never to the product.
+"""
+import argparse
+import base64
+from contextlib import closing
+import json
+import os
+from pathlib import Path
+import secrets
+import socket
+import sqlite3
+import ssl
+import struct
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from types import SimpleNamespace
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]/'client/tests'))
+from certificates import create_certificates
+from playwright.sync_api import sync_playwright, expect
+
+def frame(main, sub, obj):
+    body=json.dumps(obj,separators=(',',':')).encode()
+    return struct.pack('<IHH',len(body),main,sub)+body
+
+class Peer:
+    def __init__(self,name,system,token,ca):
+        self.name=name;self.apps=[];self.commands=[];self.lock=threading.Lock();self.stop=threading.Event();self.error=None
+        self.sock=ssl.create_default_context(cafile=str(ca)).wrap_socket(socket.create_connection(('127.0.0.1',37183),timeout=3),server_hostname='127.0.0.1')
+        key=base64.b64encode(secrets.token_bytes(16)).decode()
+        request=(f'GET /api/v1/login?node={name}&token={token}&protocol=fastp2p2&version=2.0.0&nattype=1 HTTP/1.1\r\nHost: 127.0.0.1:37183\r\n'
+            f'Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n')
+        self.sock.sendall(request.encode());self.buffer=bytearray()
+        while b'\r\n\r\n' not in self.buffer:self.buffer.extend(self.sock.recv(4096))
+        head,self.buffer=self.buffer.split(b'\r\n\r\n',1);assert b' 101 ' in head
+        self.buffer=bytearray(self.buffer)
+        self.sock.settimeout(None)
+        self.send(frame(6,0,{'os':system,'version':'2.0.0','lanIP':'192.0.2.8','hasIPv4':1,
+            'udpNatType':2,'natLevel':2,'tcpNatType':1,'tcpNatSamples':4,'tcpNatDestinationIPs':3}))
+        self.reader=threading.Thread(target=self.read_loop,daemon=True);self.reader.start()
+        self.heartbeat=threading.Thread(target=self.heartbeat_loop,daemon=True);self.heartbeat.start()
+    def exact(self,n):
+        while len(self.buffer)<n:
+            part=self.sock.recv(4096)
+            if not part:raise EOFError()
+            self.buffer.extend(part)
+        data=bytes(self.buffer[:n]);del self.buffer[:n];return data
+    def send(self,data,opcode=2):
+        mask=secrets.token_bytes(4);n=len(data)
+        header=bytes([0x80|opcode,0x80|n]) if n<126 else bytes([0x80|opcode,0xfe])+struct.pack('!H',n)
+        with self.lock:self.sock.sendall(header+mask+bytes(c^mask[i%4] for i,c in enumerate(data)))
+    def heartbeat_loop(self):
+        while not self.stop.wait(3):
+            try:self.send(frame(1,0,None))
+            except OSError:return
+    def read_loop(self):
+        try:
+            while not self.stop.is_set():
+                first,second=self.exact(2);n=second&127
+                if n==126:n=struct.unpack('!H',self.exact(2))[0]
+                elif n==127:n=struct.unpack('!Q',self.exact(8))[0]
+                payload=self.exact(n);opcode=first&15
+                if opcode==8:return
+                if opcode==9:self.send(payload,10);continue
+                if opcode not in (0,2):continue
+                length,main,sub=struct.unpack('<IHH',payload[:8]);assert length==len(payload)-8
+                if main!=3:continue
+                if sub not in (7,9,10,18):continue
+                body=json.loads(payload[8:]);self.commands.append((sub,body))
+                if sub==7:self.send(frame(6,3,{'Apps':self.apps}))
+                elif sub==9:
+                    if body.get('srcPort0'):
+                        self.apps=[a for a in self.apps if (a['srcPort'],a['protocol'])!=(body['srcPort0'],body['protocol0'])]
+                    if body.get('srcPort'):
+                        self.apps.append({**body,'enabled':1,'isActive':1,'linkMode':'ipv4' if body.get('punchPriority')==3 else 'udppunch'})
+                elif sub==10:
+                    for app in self.apps:
+                        if (app['srcPort'],app['protocol'])==(body['srcPort'],body['protocol']):app.update(enabled=body['enabled'],isActive=body['enabled'])
+        except (OSError,EOFError):pass
+        except Exception as error:self.error=type(error).__name__
+    def close(self):
+        self.stop.set()
+        try:self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:pass
+        self.sock.close();self.reader.join(timeout=2);self.heartbeat.join(timeout=2)
+
+def main():
+    p=argparse.ArgumentParser();p.add_argument('--gateway',required=True);p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--wsl',action='store_true');p.add_argument('--browser-executable')
+    p.add_argument('--client',help='Optional real C client; exercises advanced JSON configuration')
+    args=p.parse_args();args.output.mkdir(parents=True,exist_ok=True)
+    peers=[];process=None;client=None;client_log=None;results={}
+    with tempfile.TemporaryDirectory(prefix='fastp2p-web-') as directory:
+        root=Path(directory)
+        assert root.resolve().parent == Path(tempfile.gettempdir()).resolve() and root.name.startswith('fastp2p-web-')
+        create_certificates(root/'certs','127.0.0.1')
+        username='web-admin';password=secrets.token_urlsafe(24);token='9999999999999999'
+        env=os.environ.copy();env.update(FASTP2P_USER=username,FASTP2P_PASSWORD=password,FASTP2P_TOKEN=token)
+        if args.wsl:
+            remote=subprocess.check_output(['wsl.exe','-d','Debian','-u','maoyu','--','wslpath','-a',root.as_posix()],text=True).strip()
+            (root/'launch.sh').write_text('#!/bin/bash\nset -e\necho $$ > "$1/gateway.pid"\nshift\nexec "$@"\n',newline='\n')
+            env['WSLENV']=env.get('WSLENV','')+':FASTP2P_USER:FASTP2P_PASSWORD:FASTP2P_TOKEN'
+            command=['wsl.exe','-d','Debian','-u','maoyu','--','bash',remote+'/launch.sh',remote,args.gateway,
+                     '--cert',remote+'/certs/server.crt','--key',remote+'/certs/server.key']
+        else:command=[str(Path(args.gateway).resolve()),'--cert',str(root/'certs/server.crt'),'--key',str(root/'certs/server.key')]
+        command+=['--database',remote+'/nodes.sqlite3' if args.wsl else str(root/'nodes.sqlite3'),
+                  '--bind','127.0.0.1','--apibind','127.0.0.1','--port','37183','--apiport','31008','--run-seconds','600']
+        log=(root/'gateway.log').open('w')
+        try:
+            process=subprocess.Popen(command,env=env,stdout=log,stderr=subprocess.STDOUT)
+            deadline=time.monotonic()+20
+            while True:
+                assert process.poll() is None,'Gateway exited before readiness; private fixture log available during test'
+                try:
+                    with socket.create_connection(('127.0.0.1',31008),timeout=1):break
+                except OSError:
+                    if time.monotonic()>deadline:raise
+                    time.sleep(.1)
+            if args.client:
+                client_log=(root/'client.log').open('w')
+                (root/'config').mkdir()
+                client_config={'product':'fastp2p','network':{'Node':'web-c-node','ServerHost':'127.0.0.1','ServerPort':37183,'Token':token},
+                    'CACertFile':remote+'/certs/ca.crt' if args.wsl else str(root/'certs/ca.crt'),
+                    'custom':{'nested':{'keep':42,'update':1}},'apps':[],'socks5':[]}
+                (root/'config/fastp2p.conf').write_text(json.dumps(client_config))
+                if args.wsl:
+                    (root/'launch-client.sh').write_text('#!/bin/bash\nset -e\necho $$ > "$1/client.pid"\nshift\nexec "$@"\n',newline='\n')
+                    client_command=['wsl.exe','-d','Debian','-u','maoyu','--','bash',remote+'/launch-client.sh',remote,args.client,
+                        '--config',remote+'/config/fastp2p.conf']
+                else:client_command=[str(Path(args.client).resolve()),'--config',str(root/'config/fastp2p.conf')]
+                client_command+=['--run-seconds','600']
+                client_env=env.copy();client_env.pop('FASTP2P_TOKEN',None)
+                client_env['WSLENV']=':'.join(item for item in client_env.get('WSLENV','').split(':') if item.split('/')[0]!='FASTP2P_TOKEN')
+                client=subprocess.Popen(client_command,env=client_env,stdout=client_log,stderr=subprocess.STDOUT)
+                c=SimpleNamespace(name='web-c-node')
+            else:
+                c=Peer('web-c-node','linux-c',token,root/'certs/ca.crt');peers.append(c)
+            go=Peer('web-rich-node','<img src=x onerror=globalThis.__xss=1>',token,root/'certs/ca.crt');peers.append(go)
+            go.apps=[{'appName':'<img src=x onerror=globalThis.__xss=1>','protocol':'tcp','srcPort':23456,'dstHost':'127.0.0.1','dstPort':22,'peerNode':c.name,'enabled':1,'isActive':1,'linkMode':'udppunch'}]
+            with sync_playwright() as pw:
+                browser=pw.chromium.launch(headless=True,**({'executable_path':args.browser_executable} if args.browser_executable else {}))
+                context=browser.new_context(ignore_https_errors=True,viewport={'width':1440,'height':1040})
+                page=context.new_page();errors=[];mutations=[];page.on('pageerror',lambda error:errors.append(str(error)))
+                page.on('response',lambda response:mutations.append(response) if response.url.endswith('/app') else None)
+                response=page.goto('https://127.0.0.1:31008/');assert response.status==200
+                assert "script-src 'self'" in response.headers['content-security-policy']
+                expect(page.get_by_role('heading',name='欢迎回来')).to_be_visible()
+                page.locator('#username').fill(username);page.locator('#password').fill('invalid')
+                page.locator('#login-submit').click();expect(page.locator('#login-error')).to_contain_text('不正确')
+                def login():
+                    page.locator('#username').fill(username);page.locator('#password').fill(password);page.locator('#login-submit').click()
+                    expect(page.locator('#online-count')).to_have_text('2',timeout=15000)
+                login();results['login_and_authenticated_overview']=True
+                # A reload must keep the operator signed in: the console stores its
+                # session per tab instead of only in memory.
+                page.reload()
+                expect(page.locator('#online-count')).to_have_text('2',timeout=15000)
+                expect(page.locator('#login-screen')).to_be_hidden()
+                results['reload_keeps_the_console_session']=True
+                nat_row=page.locator('#nodes tr').filter(has_text='web-rich-node')
+                # The cell shows the level; the mapping observation lives in the
+                # tooltip together with the caveat that filtering was not probed.
+                expect(nat_row.get_by_text('UDP：NAT2',exact=True)).to_be_visible()
+                expect(nat_row.get_by_text('TCP：映射稳定',exact=True)).to_be_visible()
+                nat_title = nat_row.locator('td').nth(3).get_attribute('title')
+                assert '对称（端口随机）' in nat_title, nat_title
+                assert '未做入站过滤探测' in nat_title, nat_title
+                results['separate_udp_tcp_mapping_labels_and_filtering_caveat']=True
+                page.locator('#token-button').click();expect(page.locator('#install-token')).to_have_value(__import__('re').compile(r'^[1-9][0-9]{15}$'))
+                assert page.locator('#install-token').get_attribute('type')=='password'
+                page.locator('#reveal-token').click();assert page.locator('#install-token').get_attribute('type')=='text'
+                page.locator('#close-token').click();expect(page.locator('#install-token')).to_have_value('')
+                results['uint64_token_mask_and_clear']=True
+                page.locator('#node-search').fill('no-match');expect(page.locator('#nodes-empty')).to_be_visible()
+                page.locator('#node-search').fill('web-c-node');expect(page.locator('#nodes tr')).to_have_count(1)
+                page.get_by_role('button',name='查看 web-c-node 的规则',exact=True).click();expect(page.locator('#rule-message')).to_contain_text('尚未配置转发规则')
+                page.locator('#add-rule').click();page.locator('#rule-name').fill('浏览器测试转发');page.locator('#rule-source').fill('24567')
+                page.locator('#rule-peer').fill(go.name);page.locator('#rule-target').fill('80');page.locator('#rule-transport').select_option('tcp')
+                page.locator('#save-rule').click()
+                try:expect(page.locator('#rules')).to_contain_text('浏览器测试转发')
+                except AssertionError:
+                    results['add_diagnostic']={'requests':[s for s,b in getattr(c,'commands',[])], 'peer_error':getattr(c,'error',None),
+                        'message':page.locator('#rule-message').text_content(), 'form_error':page.locator('#rule-error').text_content(),
+                        'invalid_fields':page.locator('#rule-form').evaluate('(form)=>Array.from(form.elements).filter(e=>e.validity&&!e.validity.valid).map(e=>[e.id,e.validationMessage])'),
+                        'responses':[(r.status,r.text(),r.request.post_data) for r in mutations]}
+                    page.screenshot(path=str(args.output/'failure.png'),full_page=True)
+                    raise
+                if not args.client:assert any(sub==9 and body.get('punchPriority')==3 for sub,body in c.commands)
+                else:results['real_C_client_Chinese_rule_roundtrip']=True
+                # A C client now supports the full rule surface, so the console
+                # offers editing for it instead of pointing at the config file.
+                expect(page.locator('#rules').get_by_role('button',name='编辑')).to_have_count(1)
+                results['C_capabilities_and_add_forward']=True
+                if args.client:
+                    # Manual field configuration was removed from the console: the
+                    # gateway refuses the endpoint with 410, and the dialog is gone.
+                    status=page.evaluate('''async () => {
+                        const session=JSON.parse(sessionStorage.getItem('fastp2p.console')||'{}');
+                        const r=await fetch('/api/v1/device/web-c-node/config',{headers:{Authorization:'Bearer '+session.token}});
+                        return r.status;
+                    }''')
+                    assert status==410,status
+                    assert page.get_by_role('button',name='配置节点 web-c-node',exact=True).count()==0
+                    assert page.locator('#config-fields').count()==0
+                    results['manual_config_endpoint_retired_410_and_no_dialog']=True
+                page.locator('#node-search').fill('');page.locator('#nodes tr').filter(has_text=go.name).get_by_role('button').click()
+                # Rules are served from the gateway database, so seed the row the
+                # console will read instead of relying on a client-side report.
+                seeded=page.evaluate('''async ([name]) => {
+                    const session = JSON.parse(sessionStorage.getItem('fastp2p.console') || '{}');
+                    const r = await fetch('/api/v1/device/' + encodeURIComponent(name) + '/app', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.token},
+                        body: JSON.stringify({appName: '<img src=x onerror=globalThis.__xss=1>', protocol: 'tcp',
+                            srcPort: 23456, peerNode: 'web-c-node', dstHost: '127.0.0.1', dstPort: 22})
+                    });
+                    return r.status;
+                }''',[go.name])
+                assert seeded==200,seeded
+                page.locator('#refresh-apps').click()
+                expect(page.locator('#rules')).to_contain_text('<img src=x onerror=globalThis.__xss=1>')
+                assert page.evaluate('globalThis.__xss') is None
+                page.locator('#rules').get_by_role('button',name='编辑',exact=True).click();page.locator('#rule-name').fill('Go edited')
+                page.locator('#rule-target').fill('8080');page.locator('#save-rule').click();expect(page.locator('#rules')).to_contain_text('Go edited')
+                page.locator('#rules').get_by_role('button',name='停用',exact=True).click();page.locator('#confirm-action').click()
+                expect(page.locator('#rules')).to_contain_text('已停用')
+                page.locator('#rules').get_by_role('button',name='启用',exact=True).click();page.locator('#confirm-action').click()
+                expect(page.locator('#rules')).to_contain_text('已连接')
+                page.screenshot(path=str(args.output/'desktop.png'),full_page=True)
+                page.locator('#rules').get_by_role('button',name='删除',exact=True).click();page.locator('#confirm-action').click()
+                expect(page.locator('#rules tr')).to_have_count(0)
+                results['capability_fixture_edit_switch_delete_and_XSS_escaping']=True
+                page.set_viewport_size({'width':390,'height':844});page.get_by_role('button',name='查看 '+c.name+' 的规则',exact=True).click()
+                expect(page.locator('#rules')).to_contain_text('浏览器测试转发')
+                if not page.evaluate('document.documentElement.scrollWidth <= innerWidth'):
+                    results['mobile_overflow']=page.evaluate('Array.from(document.querySelectorAll("body *")).filter(e=>e.getBoundingClientRect().right>innerWidth+1).slice(0,12).map(e=>[e.id,e.className,Math.round(e.getBoundingClientRect().width),Math.round(e.getBoundingClientRect().right)])')
+                    page.screenshot(path=str(args.output/'mobile-failure.png'),full_page=True)
+                    raise AssertionError('Mobile page overflows viewport')
+                page.screenshot(path=str(args.output/'mobile.png'),full_page=True);results['responsive_mobile_layout']=True
+                page.set_viewport_size({'width':1440,'height':1040})
+                page.route('**/api/v1/nodes?*',lambda route:route.fulfill(status=401,content_type='application/json',body='{"error":1}'))
+                page.locator('#refresh').click();expect(page.locator('#login-screen')).to_be_visible()
+                expect(page.locator('#login-error')).to_contain_text('过期');page.unroute('**/api/v1/nodes?*');login()
+                results['expired_session_returns_to_login']=True
+                go.close();peers.remove(go);page.locator('#refresh').click();expect(page.locator('#online-count')).to_have_text('1')
+                row=page.locator('#nodes tr').filter(has_text=go.name)
+                expect(row).to_contain_text('离线');row.get_by_role('button',name='查看 '+go.name+' 的规则',exact=True).click()
+                expect(page.locator('#rule-message')).to_contain_text('登记信息保留在 SQLite')
+                expect(page.locator('#add-rule')).to_be_disabled()
+                results['offline_node_retained_and_read_only']=True
+                for i in range(110):
+                    archived=Peer('zz-history-'+str(i).zfill(3),'fixture',token,root/'certs/ca.crt')
+                    archived.close()
+                page.locator('#refresh').click();expect(page.locator('#nav-count')).to_have_text('112')
+                expect(page.locator('#nodes tr')).to_have_count(100)
+                page.locator('#next-nodes').click();expect(page.locator('#nodes tr')).to_have_count(12)
+                page.locator('#previous-nodes').click();expect(page.locator('#nodes tr')).to_have_count(100)
+                page.locator('#node-search').fill('zz-history-109');expect(page.locator('#nodes tr')).to_have_count(1)
+                expect(page.locator('#nodes')).to_contain_text('zz-history-109')
+                results['offline_history_pagination_and_search_across_pages']=True
+                page.set_viewport_size({'width':390,'height':844})
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                page.screenshot(path=str(args.output/'offline-mobile.png'),full_page=True)
+                page.set_viewport_size({'width':1440,'height':1040})
+                expect(page.locator('#nodes tr').get_by_role('button',name='删除离线节点 zz-history-109',exact=True)).to_be_visible()
+                page.get_by_role('button',name='删除离线节点 zz-history-109',exact=True).click()
+                expect(page.locator('#confirm-description')).to_contain_text('再次上线会重新登记')
+                page.locator('#cancel-confirm').click();expect(page.locator('#nodes tr')).to_have_count(1)
+                page.get_by_role('button',name='删除离线节点 zz-history-109',exact=True).click()
+                page.locator('#confirm-action').click();expect(page.locator('#nodes tr')).to_have_count(0)
+                expect(page.locator('#nav-count')).to_have_text('111')
+                page.locator('#node-search').fill(c.name);expect(page.locator('#nodes tr')).to_have_count(1)
+                expect(page.get_by_role('button',name='删除离线节点 '+c.name,exact=True)).to_have_count(0)
+                results['offline_node_delete_confirmation_refresh_and_online_guard']=True
+                page.locator('#account-button').click()
+                page.locator('#account-user').fill('custom-web-admin')
+                page.locator('#current-password').fill('incorrect')
+                new_password=secrets.token_urlsafe(24);page.locator('#new-password').fill(new_password)
+                page.locator('#save-account').click();expect(page.locator('#account-error')).to_contain_text('当前密码不正确')
+                page.locator('#current-password').fill(password);page.locator('#save-account').click()
+                expect(page.locator('#login-screen')).to_be_visible()
+                expect(page.locator('#current-password')).to_have_value('');expect(page.locator('#new-password')).to_have_value('')
+                page.locator('#username').fill(username);page.locator('#password').fill(password);page.locator('#login-submit').click()
+                expect(page.locator('#login-error')).to_contain_text('不正确')
+                page.locator('#username').fill('custom-web-admin');page.locator('#password').fill(new_password);page.locator('#login-submit').click()
+                expect(page.locator('#account-name')).to_have_text('custom-web-admin')
+                expect(page.locator('#online-count')).to_have_text('1')
+                results['custom_account_current_password_and_sign_in_again']=True
+                # Exercise actual batch selection and the browser's distinction
+                # between a queued order, a skipped node, and a reported upgrade.
+                legacy=Peer('web-legacy-mac','darwin-c',token,root/'certs/ca.crt');peers.append(legacy)
+                windows=Peer('web-update-win','windows-c',token,root/'certs/ca.crt');peers.append(windows)
+                uploaded=page.evaluate('''async () => {
+                    const session=JSON.parse(sessionStorage.getItem('fastp2p.console'));
+                    const statuses=[];
+                    for (const [platform,bytes] of [['windows',[77,90,0,0]],['macos',[207,250,237,254]]]) {
+                        const r=await fetch('/api/v1/update?platform='+platform+'&version=9.9.9', {
+                            method:'PUT',headers:{Authorization:'Bearer '+session.token},body:new Uint8Array(bytes)});
+                        statuses.push(r.status);
+                    }
+                    return statuses;
+                }''')
+                assert uploaded==[200,200],uploaded
+                # Raw packages stay per architecture, while operators download
+                # exactly one small universal Linux script without choosing CPU.
+                with closing(sqlite3.connect(root/'nodes.sqlite3',timeout=5)) as db, db:
+                    for arch in ('x86_64','aarch64'):
+                        db.execute("INSERT INTO release_packages SELECT ?,version,sha256,size,filename,uploaded_at FROM updates WHERE platform='windows'",('linux-'+arch,))
+                page.locator('#refresh-updates').click()
+                linux_button=page.get_by_role('button',name='下载 Linux 通用安装脚本',exact=True)
+                expect(linux_button).to_have_count(1)
+                expect(page.locator('#updates')).to_contain_text('Linux（自动识别架构）')
+                expect(page.locator('#updates')).not_to_contain_text('linux-x86_64')
+                with page.expect_download() as downloading, page.expect_response(lambda r:'/api/v1/update/install?' in r.url) as installing:
+                    linux_button.click()
+                assert installing.value.status==200 and installing.value.url.endswith('platform=linux')
+                download=downloading.value
+                assert download.suggested_filename=='fastp2p-'+token
+                body=Path(download.path()).read_bytes()
+                assert body.startswith(b'#!/bin/sh\n') and len(body)<128*1024 and token.encode() not in body
+                assert all(('package_platform=\'linux-'+arch+'\'').encode() in body for arch in ('x86_64','aarch64'))
+                expect(page.locator('#update-message')).to_contain_text('自动识别 CPU')
+                with closing(sqlite3.connect(root/'nodes.sqlite3',timeout=5)) as db, db:
+                    db.execute("DELETE FROM release_packages WHERE platform LIKE 'linux-%'")
+                page.locator('#refresh-updates').click();expect(linux_button).to_have_count(0)
+                results['one_linux_download_auto_architecture_token_filename_and_small_script']=True
+                with closing(sqlite3.connect(root/'nodes.sqlite3',timeout=5)) as db, db:
+                    db.execute("INSERT INTO release_packages SELECT 'macos-arm64',version,sha256,size,filename,uploaded_at FROM updates WHERE platform='macos'")
+                    db.execute("DELETE FROM updates WHERE platform='macos'")
+                page.locator('#node-search').fill('');page.locator('#refresh').click()
+                expect(page.locator('#online-count')).to_have_text('3')
+                page.locator('#upgrade-all').click()
+                with page.expect_response(lambda r:r.url.endswith('/api/v1/upgrades')) as pending:
+                    page.locator('#confirm-action').click()
+                order=pending.value.json()
+                assert [item['node'] for item in order['queued']]==[windows.name],order
+                assert any(item['node']==legacy.name and item['reason']=='architecture_not_reported'
+                           for item in order['skipped']),order
+                expect(page.locator('#upgrade-message')).to_contain_text('等待客户端重启并上报新版本')
+                expect(page.locator('#upgrade-message')).to_contain_text('旧客户端未上报架构')
+                expect(page.get_by_role('button',name='升级节点 '+windows.name+' 到 9.9.9')).to_be_disabled()
+                assert not any(sub==18 for sub,_ in legacy.commands)
+                windows.send(frame(6,0,{'os':'windows-c','version':'9.9.9','lanIP':'192.0.2.8'}))
+                page.locator('#refresh').click()
+                expect(page.locator('#upgrade-message')).to_contain_text(windows.name+'：已升级到 9.9.9',timeout=15000)
+                results['upgrade_pending_completion_and_skipped_architecture_visible']=True
+                page.locator('#logout').click();expect(page.locator('#login-screen')).to_be_visible()
+                expect(page.locator('#upgrade-message')).to_be_hidden()
+                assert not errors,errors
+                context.close();browser.close()
+            assert all(peer.error is None for peer in peers)
+            results['success']=True
+        finally:
+            client_failure=False
+            if client and client.poll() is None:
+                if args.wsl and (root/'client.pid').exists():
+                    subprocess.run(['wsl.exe','-d','Debian','-u','maoyu','--','kill','-TERM',(root/'client.pid').read_text().strip()],check=True)
+                else:client.terminate()
+                try:client.wait(timeout=10)
+                except subprocess.TimeoutExpired:client.kill();client.wait()
+            if client_log:
+                client_log.close()
+                diagnostic=(root/'client.log').read_text(encoding='utf-8',errors='replace')
+                client_failure=client.returncode!=0 or 'Sanitizer' in diagnostic or 'runtime error:' in diagnostic
+                (args.output/'client.log').write_text(diagnostic.replace(token,'<redacted>').replace(password,'<redacted>'),encoding='utf-8')
+            for peer in peers:peer.close()
+            if process and process.poll() is None:
+                if args.wsl and (root/'gateway.pid').exists():
+                    subprocess.run(['wsl.exe','-d','Debian','-u','maoyu','--','kill','-TERM',(root/'gateway.pid').read_text().strip()],check=True)
+                else:process.terminate()
+                try:process.wait(timeout=10)
+                except subprocess.TimeoutExpired:process.kill();process.wait()
+            log.close()
+            if args.client and not results.get('success'):
+                current=json.loads((root/'config/fastp2p.conf').read_text(encoding='utf-8'))
+                with closing(sqlite3.connect(root/'nodes.sqlite3')) as db:
+                    row=db.execute("SELECT fields FROM node_configs WHERE node='web-c-node'").fetchone()
+                # Test-only fixture token, no production data; keep diagnostics
+                # outside Git and never print the candidate configuration.
+                (args.output/'config-diagnostic.json').write_text(json.dumps({'current':current,'fields':json.loads(row[0]) if row else {}},ensure_ascii=False),encoding='utf-8')
+            diagnostic=(root/'gateway.log').read_text(errors='replace')
+            assert process is None or process.returncode==0,'Gateway did not shut down cleanly'
+            assert 'Sanitizer' not in diagnostic and 'runtime error:' not in diagnostic,'Sanitizer failure'
+            (args.output/'result.json').write_text(json.dumps(results,indent=2)+'\n')
+            print(json.dumps(results,indent=2))
+            assert not client_failure,'C client failure; inspect the saved sanitized client.log'
+if __name__=='__main__':main()
