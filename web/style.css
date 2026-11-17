@@ -72,3 +72,20 @@
 /* device breadcrumb */
 .device-crumb{display:flex;align-items:center;gap:12px;margin-bottom:14px}
 .device-crumb-name{font-size:13px;font-weight:600;color:#54657c}
+
+/* page containers */
+.view[hidden]{display:none!important}
+.panel-body{padding:0 23px 22px}
+.install-body label{margin-top:6px}
+.install-actions{justify-content:flex-start;margin-top:12px}
+/* device page */
+.device-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 22px;padding:0 23px 22px}
+@media(min-width:1200px){.device-fields{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.device-field{display:flex;flex-direction:column;gap:2px;border-bottom:1px solid #f1f4f8;padding-bottom:8px}
+.device-field-label{font-size:10px;color:#9aa6b5}
+.device-field-value{font-size:12px;color:#42536b}
+/* mine page */
+.mine-row{display:flex;align-items:center;justify-content:space-between;gap:14px;
+  border-bottom:1px solid #f1f4f8;padding:12px 0}
+.mine-label{font-size:12px;color:#7b8899}
+.mine-row:last-child{border-bottom:0}

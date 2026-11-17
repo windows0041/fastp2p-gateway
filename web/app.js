@@ -203,9 +203,7 @@
         }); action.append(remove);
       }
       row.append(action); row.addEventListener('click', () => {
-        selectNode(n);
         location.hash = '#/device/' + encodeURIComponent(n.name);
-        showDeviceCrumb(n.name);
       });
       $('nodes').append(row);
     }
@@ -217,6 +215,7 @@
       const match = (state.nodes || []).find(n => n.name === wanted);
       if (match) { selectNode(match); showDeviceCrumb(wanted); }
     } else if (wanted) showDeviceCrumb(wanted); // restored from the address
+    if (!window.__routed) { window.__routed = true; route(); }
     text('node-page', state.total ? `${state.offset + 1}–${state.offset + state.nodes.length} / ${state.total}` : '0 / 0');
     $('previous-nodes').disabled = !state.offset;
     $('next-nodes').disabled = state.offset + 100 >= state.total;
@@ -650,9 +649,7 @@
     } catch (error) { message(error.message, true); $('confirm-dialog').close(); }
     finally { $('confirm-action').disabled = false; state.confirm = null; }
   });
-  $('token-button').addEventListener('click', () => {
-    $('install-token').value = state.installToken; $('install-token').type = 'password'; $('android-install').href = 'intent://install?token=' + encodeURIComponent(state.installToken) + '#Intent;scheme=fastp2p;package=top.fastp2p.cclient;end'; text('reveal-token', '显示'); selectInstallTab('windows'); $('token-dialog').showModal();
-  });
+
   $('reveal-token').addEventListener('click', () => {
     const hidden = $('install-token').type === 'password'; $('install-token').type = hidden ? 'text' : 'password'; text('reveal-token', hidden ? '隐藏' : '显示');
   });
@@ -660,8 +657,6 @@
     try { await navigator.clipboard.writeText(state.installToken); text('copy-token', '已复制'); }
     catch { $('install-token').type = 'text'; $('install-token').select(); text('copy-token', '请手动复制'); }
   });
-  $('token-dialog').addEventListener('close', () => { $('install-token').value = ''; $('android-install').removeAttribute('href'); text('copy-token', '复制 Token'); });
-  $('close-token').addEventListener('click', () => $('token-dialog').close());
   // Which build is offered for a platform: the console already tracks the packages
   // it has synced or uploaded, so the install page is just a filtered view of them.
   function installPlatforms() {
@@ -704,9 +699,9 @@
       for (const other of document.querySelectorAll('.topnav-item'))
         other.classList.toggle('active', other === item);
       const view = item.dataset.view;
-      if (view === 'install') { $('token-button').click(); return; }
-      if (view === 'account') { $('account-button').click(); return; }
-      window.scrollTo({top: 0, behavior: 'smooth'});
+      if (view === 'install') { location.hash = '#/install'; return; }
+      if (view === 'account') { location.hash = '#/mine'; return; }
+      location.hash = '#/devices';
     });
   // A device has its own address so a page can be linked or reloaded: the hash records
   // the selection and the breadcrumb takes the operator back to the list.
@@ -740,6 +735,72 @@
     if (name) openDevicePage(name, true);
     else showDeviceCrumb('');
   });
+  // ---- pages ---------------------------------------------------------------
+  const PAGES = ['devices', 'device', 'install', 'mine'];
+  function showView(name) {
+    for (const page of PAGES) {
+      const el = $('view-' + page);
+      if (el) el.hidden = page !== name;
+    }
+    for (const item of document.querySelectorAll('.topnav-item'))
+      item.classList.toggle('active',
+        item.dataset.view === (name === 'device' ? 'devices' : name === 'mine' ? 'account' : name));
+  }
+  function renderInstallPage() {
+    const android = $('android-install');
+    if (android) android.href = 'intent://install?token=' +
+      encodeURIComponent(state.installToken || '') +
+      '#Intent;scheme=fastp2p;package=top.fastp2p.cclient;end';
+    const input = $('install-token');
+    if (input) { input.value = state.installToken || ''; input.type = 'password'; }
+    text('reveal-token', '显示');
+    selectInstallTab('windows');
+  }
+  function renderMinePage() {
+    text('mine-account', state.token ? String(state.token).slice(0, 12) + '…' : '—');
+    text('mine-token', state.installToken || '—');
+  }
+  function route() {
+    const hash = location.hash || '#/devices';
+    const device = /^#\/device\/(.+)$/.exec(hash);
+    if (device) {
+      const name = decodeURIComponent(device[1]);
+      const node = (state.nodes || []).find(n => n.name === name);
+      showView('device');
+      if (node) { selectNode(node); renderDevicePage(node); }
+      return;
+    }
+    if (hash === '#/install') { showView('install'); renderInstallPage(); return; }
+    if (hash === '#/mine') { showView('mine'); renderMinePage(); return; }
+    showView('devices');
+  }
+  function renderDevicePage(node) {
+    text('device-heading', (node.alias || node.name));
+    text('device-summary', (node.os || '未知系统') + ' · ' + (node.ip || '—'));
+    const fields = $('device-fields');
+    if (!fields) return;
+    const rows = [
+      ['设备名字', node.name],
+      ['操作系统', node.os || '—'],
+      ['软件版本', node.version || '—'],
+      ['公网 IPv4', node.ip || '—'],
+      ['公网 IPv6', node.ipv6 || '—'],
+      ['内网 IP', node.lanip || '—'],
+      ['NAT 类型', 'UDP：' + udpLevel(node) + ' / TCP：' + tcpLabel(node)],
+      ['最近活跃', node.activetime ? String(node.activetime) : '—'],
+      ['状态', Number(node.isActive) === 1 ? '在线' : '离线'],
+    ];
+    fields.replaceChildren(...rows.map(([label, value]) => {
+      const row = element('div', 'device-field');
+      row.append(element('span', 'device-field-label', label),
+                 element('span', 'device-field-value mono', String(value)));
+      return row;
+    }));
+  }
+  window.addEventListener('hashchange', route);
+  $('device-back-inline').addEventListener('click', () => { location.hash = '#/devices'; });
+  $('mine-account-edit').addEventListener('click', () => $('account-button').click());
+  $('mine-logout').addEventListener('click', () => logout());
   $('logout').addEventListener('click', () => logout()); $('refresh').addEventListener('click', refresh);
   $('overview-nav').addEventListener('click', () => window.scrollTo({top: 0, behavior: 'smooth'}));
   let searchTimer;
