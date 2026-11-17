@@ -694,7 +694,7 @@
   for (const tab of document.querySelectorAll('.install-tab'))
     tab.addEventListener('click', () => selectInstallTab(tab.dataset.platform));
   // Top navigation drives the existing views and dialogs; the console stays one page.
-  for (const item of document.querySelectorAll('.bottomnav-item'))
+  for (const item of document.querySelectorAll('.side-action'))
     item.addEventListener('click', () => {
       for (const other of document.querySelectorAll('.topnav-item'))
         other.classList.toggle('active', other === item);
@@ -743,7 +743,7 @@
       const el = $('view-' + page);
       if (el) el.hidden = page !== name;
     }
-    for (const item of document.querySelectorAll('.bottomnav-item'))
+    for (const item of document.querySelectorAll('.side-action'))
       item.classList.toggle('active',
         item.dataset.view === (name === 'device' ? 'devices' :
                                name === 'mine' ? 'account' : name));
@@ -802,9 +802,9 @@
   }
   window.addEventListener('hashchange', route);
   $('device-back-inline').addEventListener('click', () => { location.hash = '#/devices'; });
-  $('mine-account-edit').addEventListener('click', () => $('account-button').click());
+  $('mine-account-edit').addEventListener('click', () => $('account-dialog').showModal());
   $('mine-logout').addEventListener('click', () => logout());
-  $('logout').addEventListener('click', () => logout()); $('refresh').addEventListener('click', refresh);
+  $('side-logout').addEventListener('click', () => logout()); $('refresh').addEventListener('click', refresh);
   $('overview-nav').addEventListener('click', () => window.scrollTo({top: 0, behavior: 'smooth'}));
   let searchTimer;
   $('node-search').addEventListener('input', () => {

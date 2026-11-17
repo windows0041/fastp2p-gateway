@@ -102,3 +102,12 @@ body{padding-bottom:72px}
 @media(max-width:560px){.bottomnav{gap:2px;padding:6px 8px}
   .bottomnav-item{padding:8px 10px;font-size:11px;flex:1}}
 @media print{.bottomnav{display:none}body{padding-bottom:0}}
+
+/* sidebar actions under 版本与下载 */
+.side-actions{display:grid;gap:6px;margin:14px 0 0}
+.side-action{padding:9px 12px;border-radius:8px;background:transparent;color:#9fb0c6;
+  text-align:left;font-size:12px;border:0}
+.side-action:hover{background:#182a40;color:#c7d6e6}
+.side-action.active{background:#153e40;color:#78dfce}
+@media(max-width:850px){.side-actions{display:flex;gap:4px;margin:8px 0 0}
+  .side-action{padding:8px 10px}}
