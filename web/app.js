@@ -139,7 +139,7 @@
       row.append(seen);
       const action = element('td'), button = element('button', 'link-button', active ? '查看规则 →' : '查看记录 →');
       button.type = 'button'; button.setAttribute('aria-label', '查看 ' + n.name + ' 的规则');
-      button.addEventListener('click', event => { event.stopPropagation(); selectNode(n); });
+      button.addEventListener('click', event => { event.stopPropagation(); goToDevice(n.name); });
       action.append(button);
       /* Jump straight to this device's forwarding rules instead of making the
        * operator scroll after selecting it. */
@@ -148,9 +148,7 @@
       forward.setAttribute('aria-label', '查看 ' + n.name + ' 的端口转发');
       forward.addEventListener('click', event => {
         event.stopPropagation();
-        selectNode(n);
-        const panel = document.querySelector('.rules-panel');
-        if (panel) panel.scrollIntoView({behavior: 'smooth', block: 'start'});
+        goToDevice(n.name);
       });
       action.append(forward);
       /* Restart through the upgrade channel: the same build is re-installed, so the
@@ -764,6 +762,11 @@
   function renderMinePage() {
     text('mine-account', state.user || '—');
     text('mine-token', state.installToken || '—');
+  }
+  function goToDevice(name) {
+    const target = '#/device/' + encodeURIComponent(name);
+    if (location.hash === target) route();   // same device again: still navigate
+    else location.hash = target;
   }
   function route() {
     const hash = location.hash || '#/overview';
