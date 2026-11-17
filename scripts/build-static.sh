@@ -98,7 +98,7 @@ group="-Wl,--start-group $prefix/lib/libwebsockets.a $prefix/lib/libssl.a"
 group="$group $prefix/lib/libcrypto.a $prefix/lib/libsqlite3.a $prefix/lib/libjson-c.a -Wl,--end-group"
 export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig"
 export PKG_CONFIG_PATH="$prefix/lib/pkgconfig"
-cmake -S "$repository/c/gateway" -B "$work/build-gateway-$arch" -G Ninja \
+cmake -S "$repository/" -B "$work/build-gateway-$arch" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
   -DCMAKE_TOOLCHAIN_FILE="$repository/toolchain/linux-musl.cmake" \
   -DFASTP2P_TARGET_ARCH="$arch" \
@@ -118,11 +118,11 @@ stage=$out/c-gateway-linux-static-$arch
 rm -rf "$stage"
 mkdir -p "$out"
 cmake --install "$work/build-gateway-$arch" --prefix "$stage" >/dev/null
-cp "$repository/c/gateway/README.md" "$repository/c/gateway/VALIDATION-ZH.md" \
-   "$repository/c/gateway/THIRD_PARTY.md" "$repository/c/gateway/LICENSE" \
-   "$repository/c/gateway/.env.example" "$stage/"
+cp "$repository/README.md" "$repository/VALIDATION-ZH.md" \
+   "$repository/THIRD_PARTY.md" "$repository/LICENSE" \
+   "$repository/.env.example" "$stage/"
 cp "$repository/c/NODE-STORAGE-ZH.md" "$stage/"
-cp -R "$repository/c/gateway/deploy" "$stage/"
+cp -R "$repository/deploy" "$stage/"
 mkdir -p "$stage/scripts"
 cp "$repository/scripts/tls/generate-cert.sh" "$stage/scripts/"
 
