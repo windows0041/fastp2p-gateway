@@ -43,9 +43,9 @@ fi
 
 export PKG_CONFIG_SYSROOT_DIR="$sysroot"
 export PKG_CONFIG_LIBDIR="$sysroot/usr/lib/aarch64-linux-gnu/pkgconfig:$sysroot/usr/share/pkgconfig"
-cmake -S "$repository/c/gateway" -B "$build" -G Ninja \
+cmake -S "$repository/" -B "$build" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
-  -DCMAKE_TOOLCHAIN_FILE="$repository/c/gateway/cmake/arm64-linux.cmake" \
+  -DCMAKE_TOOLCHAIN_FILE="$repository/cmake/arm64-linux.cmake" \
   -DFASTP2P_SYSROOT="$sysroot" \
   -DOPENSSL_ROOT_DIR="$sysroot/usr" \
   -DOPENSSL_INCLUDE_DIR="$sysroot/usr/include" \
@@ -58,11 +58,11 @@ cmake --build "$build" --parallel "$(nproc)"
 cmake --install "$build"
 
 mkdir -p "$out"
-cp "$repository/c/gateway/README.md" "$repository/c/gateway/VALIDATION-ZH.md" \
-   "$repository/c/gateway/THIRD_PARTY.md" "$repository/c/gateway/LICENSE" \
-   "$repository/c/gateway/.env.example" "$out/c-gateway-debian-arm64/"
+cp "$repository/README.md" "$repository/VALIDATION-ZH.md" \
+   "$repository/THIRD_PARTY.md" "$repository/LICENSE" \
+   "$repository/.env.example" "$out/c-gateway-debian-arm64/"
 cp "$repository/c/NODE-STORAGE-ZH.md" "$out/c-gateway-debian-arm64/"
-cp -R "$repository/c/gateway/deploy" "$out/c-gateway-debian-arm64/"
+cp -R "$repository/deploy" "$out/c-gateway-debian-arm64/"
 mkdir -p "$out/c-gateway-debian-arm64/scripts"
 cp "$repository/scripts/tls/generate-cert.sh" "$out/c-gateway-debian-arm64/scripts/"
 tar -C "$out" -czf "$out/fastp2p-gateway-debian-arm64.tar.gz" c-gateway-debian-arm64
