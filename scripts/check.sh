@@ -8,7 +8,7 @@ case "${1:-}" in
   *) echo 'Usage: bash c/gateway/scripts/check.sh [--sanitize]' >&2; exit 2 ;;
 esac
 build="${FASTP2P_C_GATEWAY_BUILD_DIR:-$repository/build/c-gateway}"
-cmake -S "$repository/c/gateway" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Debug -DFASTP2P_SANITIZE="$sanitize"
+cmake -S "$repository" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Debug -DFASTP2P_SANITIZE="$sanitize"
 cmake --build "$build" --parallel 4
 ctest --test-dir "$build" --output-on-failure
 [[ $(id -u) == 0 ]] || { echo 'Protocol network tests need root and an isolated network namespace.' >&2; exit 1; }

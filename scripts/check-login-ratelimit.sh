@@ -8,5 +8,5 @@ chmod 700 "$runtime"
 trap 'rm -rf "$runtime"' EXIT
 bash "$repository/scripts/tls/generate-cert.sh" "$runtime/certs" localhost 127.0.0.1 \
   > "$runtime/certificate-generation.log" 2>&1
-python3 "$repository/c/gateway/tests/login_ratelimit.py" \
+python3 "$repository/tests/login_ratelimit.py" \
   --gateway "$gateway" --cert-dir "$runtime/certs" --logs "$runtime/logs"
