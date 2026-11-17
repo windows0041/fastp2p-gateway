@@ -42,3 +42,22 @@
   .node-table .node-subtitle{max-width:none}
 }
 @media(min-width:1500px){.node-table tbody{grid-template-columns:repeat(3,minmax(0,1fr))}}
+/* rule cards inside a device page */
+.rules-panel table{display:block;white-space:normal}
+.rules-panel thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.rules-panel tbody{display:grid;gap:12px;padding:2px 23px 20px}
+@media(min-width:1100px){.rules-panel tbody{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.rules-panel tbody tr{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+  gap:7px 16px;border:1px solid var(--border);border-radius:12px;padding:15px 17px;background:#fff}
+.rules-panel tbody tr:hover{background:#f9fcfd}
+.rules-panel td{display:block;border:0;padding:0;max-width:none;color:#4d5f77}
+.rules-panel td:first-child{grid-column:1/-1}
+.rules-panel td:nth-child(2),.rules-panel td:nth-child(4){grid-column:1}
+.rules-panel td:nth-child(3),.rules-panel td:nth-child(5){grid-column:2}
+.rules-panel td:nth-child(2):before{content:'本地端口';display:block;font-size:10px;color:#9aa6b5}
+.rules-panel td:nth-child(3):before{content:'目标设备 / 目标服务';display:block;font-size:10px;color:#9aa6b5}
+.rules-panel td:nth-child(4):before{content:'链路';display:block;font-size:10px;color:#9aa6b5}
+.rules-panel td:nth-child(5):before{content:'状态';display:block;font-size:10px;color:#9aa6b5}
+.rules-panel td:last-child{grid-column:1/-1;display:flex;gap:14px;align-items:center;
+  border-top:1px solid #eef2f6;margin-top:8px;padding-top:10px}
+.rules-panel .node-title{max-width:none;font-size:14px}
