@@ -132,10 +132,27 @@
       row.append(nat, element('td', 'mono', n.version || '—'));
       const active = Number(n.isActive) === 1;
       const status = element('td'); status.append(element('span', 'badge ' + (active ? 'online' : 'offline'), active ? '● 在线' : '○ 离线')); row.append(status);
+      /* The gateway reports the last heartbeat as a formatted date; an empty value
+       * means the node has not been seen since it was registered. */
+      const seen = element('td', 'mono');
+      seen.append(document.createTextNode(n.activetime ? String(n.activetime) : '—'));
+      row.append(seen);
       const action = element('td'), button = element('button', 'link-button', active ? '查看规则 →' : '查看记录 →');
       button.type = 'button'; button.setAttribute('aria-label', '查看 ' + n.name + ' 的规则');
       button.addEventListener('click', event => { event.stopPropagation(); selectNode(n); });
       action.append(button);
+      /* Jump straight to this device's forwarding rules instead of making the
+       * operator scroll after selecting it. */
+      const forward = element('button', 'link-button', '端口转发');
+      forward.type = 'button';
+      forward.setAttribute('aria-label', '查看 ' + n.name + ' 的端口转发');
+      forward.addEventListener('click', event => {
+        event.stopPropagation();
+        selectNode(n);
+        const panel = document.querySelector('.rules-panel');
+        if (panel) panel.scrollIntoView({behavior: 'smooth', block: 'start'});
+      });
+      action.append(forward);
       const latest = latestFor(platformForOs(n.os));
       if (active && latest && compareVersions(n.version, latest) < 0) {
         const upgrade = element('button', 'link-button', '升级到 ' + latest); upgrade.type = 'button';
