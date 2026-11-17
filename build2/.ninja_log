@@ -1,0 +1,24 @@
+# ninja log v6
+2	74	1794901828632169160	CMakeFiles/gateway_store.dir/common/config_merge.c.o	7433fd47d828cb7c
+1	107	1794901828631569108	CMakeFiles/gateway_store.dir/src/account.c.o	e4ce88d44bfdb0a0
+1	138	1794901828631010246	CMakeFiles/gateway_protocol.dir/src/security.c.o	770fd2fa80c44fcc
+0	142	1794901828624881277	CMakeFiles/gateway_protocol.dir/src/protocol.c.o	25673728ba6dfc7f
+1	154	1794901828631145631	CMakeFiles/gateway_protocol.dir/common/enrollment.c.o	dfea419caea4ba1f
+107	162	1794901828736552900	CMakeFiles/test-gateway-protocol.dir/tests/test_protocol.c.o	c857f9c501d123d1
+74	178	1794901828704546070	CMakeFiles/test-gateway-config.dir/tests/test_config_store.c.o	94e2dee31d446136
+1	212	1794901828631915765	CMakeFiles/gateway_store.dir/src/config_store.c.o	e76cc156bd44d3fc
+2	242	1794901828632509889	CMakeFiles/test-gateway-store.dir/tests/test_store.c.o	2626cbdc582e1300
+155	273	1794901828783830999	libgateway_protocol.a	4350d311dedb506
+1	314	1794901828631327571	CMakeFiles/gateway_store.dir/src/store.c.o	b869627180106e23
+314	340	1794901828940881278	libgateway_store.a	15763317c3d01932
+340	360	1794901828987796838	linux_installer_assets.h	d4122a7514381c66
+340	360	1794901828987796838	/home/maoyu/gwsplit/fastp2p-gateway/build2/linux_installer_assets.h	d4122a7514381c66
+340	364	1794901828992313514	web_assets.h	add5c5d713afe9e4
+340	364	1794901828992313514	/home/maoyu/gwsplit/fastp2p-gateway/build2/web_assets.h	add5c5d713afe9e4
+273	368	1794901828896881278	test-gateway-protocol	419c347c3747255a
+340	423	1794901828970873051	test-gateway-store	b713dacba19bf77
+341	426	1794901828971154047	test-gateway-config	a27804f12965d93a
+365	462	1794901828995205831	CMakeFiles/fastp2p-gateway.dir/src/linux_installer.c.o	16e0194d2a3f52eb
+365	528	1794901828995015800	CMakeFiles/fastp2p-gateway.dir/src/nat.c.o	953a7ca32721d27a
+364	1113	1794901828992313514	CMakeFiles/fastp2p-gateway.dir/src/gateway.c.o	291c512fd3e7e34b
+1113	1178	1794901829736881285	fastp2p-gateway	491ca80333ed4ec3

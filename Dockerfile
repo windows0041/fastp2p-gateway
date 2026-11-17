@@ -3,9 +3,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake ninja-build pkg-config python3 libwebsockets-dev libjson-c-dev libssl-dev libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /source
-COPY c/common ./c/common
-COPY c/client/scripts/linux-installer.sh c/client/scripts/fastp2p-service.sh ./c/client/scripts/
-COPY c/gateway ./c/gateway
+COPY common ./common
+COPY client-scripts/linux-installer.sh client-scripts/fastp2p-service.sh ./client-scripts/
+COPY . ./
 RUN cmake -S c/gateway -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
     && cmake --build /build --parallel 2 \
     && cmake --install /build --prefix /opt/fastp2p
