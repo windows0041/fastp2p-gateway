@@ -1,0 +1,50 @@
+name: musl toolchains
+# Publishes the pinned musl-cross archives into this repository's own release, copying
+# them from the archived monorepo. Downloads of the old release assets succeed from a
+# GitHub runner (they 404 from some networks), so the copy happens here.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['musl-toolchains']
+permissions:
+  contents: write
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - name: Mirror the pinned archives into this repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          api=https://api.github.com/repos/${{ github.repository }}
+          source=windows0041/oldfastp2p
+          tag=musl-toolchains
+          python3 - <<'PY' > names.txt
+          import re
+          for line in open('toolchain/musl-toolchains.txt', encoding='utf-8'):
+              parts = line.split()
+              if len(parts) == 2:
+                  print(parts[1])
+          PY
+          release=$(curl -fsS -H "Authorization: Bearer $GITHUB_TOKEN" "$api/releases/tags/$tag" || true)
+          if [ -z "$release" ]; then
+            release=$(curl -fsS -X POST -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H 'Content-Type: application/json' \
+              -d '{"tag_name":"musl-toolchains","name":"musl toolchains","body":"Pinned musl-cross toolchains for the static builds.","draft":false,"prerelease":false}' \
+              "$api/releases")
+          fi
+          id=$(printf '%s' "$release" | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+          while read -r name; do
+            [ -n "$name" ] || continue
+            echo "--- $name"
+            curl -fsSL -H 'Authorization: Bearer $GITHUB_TOKEN' \
+              -o "$name" "https://github.com/$source/releases/download/$tag/$name"
+            curl -fsS -X POST -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H 'Content-Type: application/octet-stream' --data-binary "@$name" \
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/$id/assets?name=$name" \
+              > /dev/null && echo "    uploaded"
+            rm -f "$name"
+          done < names.txt
