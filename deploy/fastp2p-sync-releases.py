@@ -155,9 +155,9 @@ def github_token():
 def fetch(url, accept='application/vnd.github+json', accelerated=False):
     headers = {'User-Agent': 'FastP2P-gateway', 'Accept': accept}
     token = github_token()
-    if token:
-        headers['Authorization'] = 'Bearer ' + token
     request = urllib.request.Request(url, headers=headers)
+    if token and not accelerated and urllib.parse.urlsplit(url).hostname == 'api.github.com':
+        request.add_unredirected_header('Authorization', 'Bearer ' + token)
     handlers = [GitHubRedirect(accelerated)]
     if accelerated:
         handlers.append(urllib.request.ProxyHandler({}))
@@ -174,7 +174,7 @@ def validate_download_prefix(prefix):
     return prefix.rstrip('/') + '/'
 
 
-def release_page(url, download_prefix):
+def release_data(url, download_prefix, expected_type):
     routes = [(url, False)]
     if download_prefix:
         routes.insert(0, (download_prefix + url, True))
@@ -183,11 +183,11 @@ def release_page(url, download_prefix):
             with fetch(source, accelerated=accelerated) as response:
                 data = response.read(4 * 1024 * 1024 + 1)
             if len(data) > 4 * 1024 * 1024:
-                raise ValueError('GitHub release list is too large')
-            rows = json.loads(data)
-            if not isinstance(rows, list):
-                raise ValueError('invalid GitHub release list')
-            return rows
+                raise ValueError('GitHub release response is too large')
+            result = json.loads(data)
+            if not isinstance(result, expected_type):
+                raise ValueError('invalid GitHub release response')
+            return result
         except (OSError, ValueError) as error:
             if not accelerated:
                 raise
@@ -196,10 +196,19 @@ def release_page(url, download_prefix):
 
 
 def latest(repository, download_prefix=''):
+    url = f'https://api.github.com/repos/{repository}/releases'
+    try:
+        marked = release_data(url + '/latest', download_prefix, dict)
+        tag = marked.get('tag_name')
+        match = TAG.fullmatch(tag) if isinstance(tag, str) else None
+        if match and not marked['draft'] and not marked['prerelease']:
+            return match[1], marked
+    except (OSError, KeyError, ValueError):
+        pass  # Repositories without a usable latest marker can still publish stable client tags.
+
     releases = []
     for page in range(1, 6):
-        url = f'https://api.github.com/repos/{repository}/releases?per_page=100&page={page}'
-        rows = release_page(url, download_prefix)
+        rows = release_data(f'{url}?per_page=100&page={page}', download_prefix, list)
         for release in rows:
             match = TAG.fullmatch(release['tag_name'])
             if match and not release['draft'] and not release['prerelease']:

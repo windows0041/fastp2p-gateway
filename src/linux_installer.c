@@ -67,24 +67,28 @@ int gw_linux_installer(const char *directory,const char *host,unsigned port,cons
        strstr(ca,"FASTP2P_DOWNLOAD_CA_EOF") || !count || count>GW_LINUX_ARCH_COUNT)return -1;
     for(size_t i=0;i<count;i++)if(!package_valid(packages+i))return -1;
     const char controller[]="@@FASTP2P_CONTROLLER@@\n",download[]="@@FASTP2P_DOWNLOAD@@\n";
-    const char *a=strstr(linux_install_script,controller),*b=strstr(linux_install_script,download);
-    if(!a || !b || b<a)return -1;
+    const char *download_at=strstr(linux_install_script,download);
+    const char *controller_at=strstr(linux_install_script,controller);
+    if(!download_at || !controller_at || controller_at<download_at)return -1;
     char *script=NULL;size_t length=0;
     FILE *memory=open_memstream(&script,&length);if(!memory)return -1;
-    fwrite(linux_install_script,1,(size_t)(a-linux_install_script),memory);
-    fputs("cat > \"$work/fastp2p-service\" <<'FASTP2P_SERVICE_EOF'\n",memory);
-    fputs(linux_service_script,memory);fputs("\nFASTP2P_SERVICE_EOF\n",memory);
-    a+=sizeof(controller)-1;fwrite(a,1,(size_t)(b-a),memory);
+    fwrite(linux_install_script,1,(size_t)(download_at-linux_install_script),memory);
     fprintf(memory,"gateway_url='https://%s:%u'\ndownload_ca=%u\ncase \"$arch\" in\n",authority,port,*ca?1:0);
     for(size_t i=0;i<count;i++){
         const struct gw_linux_package *p=packages+i;
         fprintf(memory,"    %s) package_platform='%s'; expected_version='%s'; expected_sha='%s'; expected_size=%" PRIu64 " ;;\n",
                 p->arch,p->platform,p->version,p->sha,p->size);
     }
-    fputs("    *) fail \"网关尚无 $arch 的安装包，请先同步对应架构的 Release。\" ;;\nesac\n",memory);
+    fputs("    *) fail \"此安装脚本没有 $arch 的客户端包。可用架构：",memory);
+    for(size_t i=0;i<count;i++)fprintf(memory,"%s%s",i?"、":"",packages[i].arch);
+    fputs("。\" ;;\nesac\n",memory);
     fputs("cat > \"$work/gateway-ca.pem\" <<'FASTP2P_DOWNLOAD_CA_EOF'\n",memory);
     fputs(ca,memory);fputs("\nFASTP2P_DOWNLOAD_CA_EOF\n",memory);
-    fputs(b+sizeof(download)-1,memory);
+    const char *after_download=download_at+sizeof(download)-1;
+    fwrite(after_download,1,(size_t)(controller_at-after_download),memory);
+    fputs("cat > \"$work/fastp2p-service\" <<'FASTP2P_SERVICE_EOF'\n",memory);
+    fputs(linux_service_script,memory);fputs("\nFASTP2P_SERVICE_EOF\n",memory);
+    fputs(controller_at+sizeof(controller)-1,memory);
     if(fclose(memory)){free(script);return -1;}
     unsigned char digest[32];unsigned bytes=0;char template_sha[65];
     if(!EVP_Digest(script,length,digest,&bytes,EVP_sha256(),NULL) || bytes!=32){free(script);return -1;}

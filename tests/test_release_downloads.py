@@ -79,24 +79,44 @@ class ReleaseDownloadTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 handler.redirect_request(request, None, 302, '', {}, url)
 
-    def test_latest_release_lookup_uses_configured_accelerator(self):
+    def test_prefers_the_marked_stable_release(self):
+        release = {'tag_name': 'fastp2p-client-v2.0.15', 'draft': False, 'prerelease': False}
+        with patch.object(sync, 'fetch', return_value=io.BytesIO(json.dumps(release).encode())) as fetch:
+            self.assertEqual(sync.latest(self.repository, 'https://gh-proxy.com/'), ('2.0.15', release))
+        fetch.assert_called_once_with(
+            'https://gh-proxy.com/https://api.github.com/repos/windows0041/fastp2p/releases/latest',
+            accelerated=True)
+
+    def test_non_client_latest_falls_back_to_stable_client_tags(self):
         payload = json.dumps([
             {'tag_name': 'fastp2p-client-v2.0.2', 'draft': False, 'prerelease': False},
             {'tag_name': 'fastp2p-gateway-v9.0.0', 'draft': False, 'prerelease': False},
             {'tag_name': 'fastp2p-client-v3.0.0', 'draft': False, 'prerelease': True},
         ]).encode()
-        with patch.object(sync, 'fetch', return_value=io.BytesIO(payload)) as fetch:
+        toolchains = io.BytesIO(b'{"tag_name":"musl-toolchains","draft":false,"prerelease":false}')
+        with patch.object(sync, 'fetch', side_effect=[toolchains, io.BytesIO(payload)]) as fetch:
             version, _ = sync.latest(self.repository, 'https://gh-proxy.com/')
         self.assertEqual(version, '2.0.2')
-        self.assertTrue(fetch.call_args.args[0].startswith('https://gh-proxy.com/https://api.github.com/'))
+        self.assertIn('/releases?per_page=', fetch.call_args.args[0])
         self.assertTrue(fetch.call_args.kwargs['accelerated'])
 
     def test_failed_accelerated_metadata_falls_back_to_direct_api(self):
         with patch.object(sync, 'fetch', side_effect=[urllib.error.URLError('unavailable'), io.BytesIO(b'[]')]) as fetch:
             with contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(sync.release_page('https://api.github.com/fixture', 'https://gh-proxy.com/'), [])
+                self.assertEqual(sync.release_data('https://api.github.com/fixture', 'https://gh-proxy.com/', list), [])
         self.assertEqual(fetch.call_args.args, ('https://api.github.com/fixture',))
         self.assertFalse(fetch.call_args.kwargs['accelerated'])
+
+    def test_github_token_is_only_sent_to_the_official_api(self):
+        with patch.object(sync, 'github_token', return_value='fixture'), patch.object(
+                sync.urllib.request, 'build_opener') as build:
+            opener = build.return_value
+            sync.fetch(self.asset['url'])
+            request = opener.open.call_args.args[0]
+            self.assertEqual(request.get_header('Authorization'), 'Bearer fixture')
+            self.assertNotIn('Authorization', request.headers)
+            sync.fetch('https://gh-proxy.com/' + self.asset['url'], accelerated=True)
+            self.assertIsNone(opener.open.call_args.args[0].get_header('Authorization'))
 
 
 if __name__ == '__main__':

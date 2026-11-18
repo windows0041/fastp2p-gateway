@@ -4,6 +4,8 @@ Linux C11 网关提供 HTTPS/WSS、NAT 探测、连接协调、中继候选选�
 
 ## Release 下载加速
 
+同步优先读取 GitHub 的 `releases/latest`。如果它没有指向有效的客户端正式版，网关从版本列表中选择版本号最高的 `fastp2p-client-vX.Y.Z` 正式版。
+
 在环境文件中设置 `FASTP2P_RELEASE_DOWNLOAD_PREFIX=https://gh-proxy.org/`，控制台同步时会优先通过该加速入口查询版本信息和下载公开 Release 文件。下载内容需与 API 元数据和校验清单中的大小、SHA-256 一致，加速异常时尝试直连官方 API。加速请求直接连接加速站。该配置下元数据和文件都由加速站转发，摘要校验验证下载一致性，发布者身份仍依赖这条获取链路。
 
 ## 构建
@@ -81,6 +83,8 @@ docker build -t fastp2p-gateway:local .
 Linux 控制台只提供一个通用 shell 安装脚本：`GET /api/v1/update/install?platform=linux`。脚本包含各架构最新可用包的版本、长度、SHA-256、网关地址、公开 CA 和独立系统服务脚本，不包含 ELF；执行时自动识别 CPU，从网关的公开 WSS 端口通过 HTTPS 下载原始程序。设备需要 curl 或启用 TLS 的 GNU wget。Token 只放在 16 位数字的下载文件名中，不进入共享缓存；下载器用私有配置文件传递 `Authorization: FastP2P <Token>`，不泄露到 URL 或下载器参数。下载端点保留旧客户端的 query Token 兼容，只允许获取程序，不授予管理权限。客户端远程升级接口仍提供原始可执行文件，按架构存储的包不受 UI 合并影响。旧的指定架构、版本的安装 URL 仍可使用，返回包含该版本各架构清单的通用脚本。已清理旧包时需重新下载脚本。修改安装脚本后须重新构建网关（Docker 构建上下文使用仓库根目录）。
 
 专用客户端包通过 [客户端仓库的 `common/bootstrap.json`](https://github.com/windows0041/fastp2p/blob/main/common/bootstrap.json) 预置网关地址和公开 CA，用户只需输入 16 位数字 Token。更换服务器 CA 或地址后需要重新构建专用客户端。
+
+默认 Linux 安装脚本使用最近一次成功同步的版本及更新的包。官方客户端当前提供 x86_64、aarch64、armv7、riscv64 和 mips64el。缺少本机架构时，脚本会列出可用架构并在改动服务前退出。
 
 网关 2.0.7 内置的 Linux 安装脚本在新程序验证启动成功后清理历史程序副本，保留配置、证书和诊断日志。客户端 2.0.5 同时处理远程升级后的旧可执行文件及已退出升级进程留下的临时程序；安装失败仍保留回滚所需文件。
 

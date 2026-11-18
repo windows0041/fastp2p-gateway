@@ -366,6 +366,7 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
         }
         c->public_port = (unsigned)port;
         c->config_supported = gw_integer(j,"configPush") != 0;
+        c->restart_supported = gw_integer(j, "restart") == 1;
         c->major = major_version(c->version);
         if (gw_store_save(g.db, c, 1)) {
             json_object_put(j);
@@ -701,6 +702,7 @@ static void capabilities(json_object *node) {
     json_object_object_add(caps, "switchForward", json_object_new_boolean(1));
     struct connection *live=find_node(gw_node_id(gw_string(node,"name")));
     json_object_object_add(caps,"configPush",json_object_new_boolean(live&&live->config_supported));
+    json_object_object_add(caps, "restart", json_object_new_boolean(live && live->restart_supported));
     json_object_object_add(node, "capabilities", caps);
 }
 static json_object *devices(void) {
@@ -938,6 +940,8 @@ static int version_compare(const char *left, const char *right) {
  * Old generic manual packages are classified from their ELF header, never run. */
 static int linux_installer_packages(const char *wanted,struct gw_linux_package out[GW_LINUX_ARCH_COUNT],size_t *count) {
     struct gw_linux_package selected[GW_LINUX_ARCH_COUNT]={0};
+    char minimum_version[32]="";
+    if(!*wanted)gw_store_release_version(g.db,minimum_version);
     json_object *list=gw_store_updates(g.db);
     if(!list)return -1;
     for(size_t i=0;i<json_object_array_length(list);i++){
@@ -945,6 +949,9 @@ static int linux_installer_packages(const char *wanted,struct gw_linux_package o
         const char *platform=gw_string(row,"platform"),*version=gw_string(row,"version");
         if(strcmp(platform,"linux") && strncmp(platform,"linux-",6))continue;
         if((*wanted && strcmp(wanted,version)) || !gw_store_package_key_valid(platform,version))continue;
+        /* Leases keep old downloads retrievable. Newly generated installers start
+         * at the last mirrored release, including on architectures it dropped. */
+        if(*minimum_version && version_compare(version,minimum_version)<0)continue;
         const char *arch=platform+6;char sha[65],filename[260];uint64_t size=0;
         if(gw_store_update_find(g.db,platform,version,sha,filename,&size))continue;
         if(!strcmp(platform,"linux")){
@@ -1621,8 +1628,12 @@ static void handle_http(struct connection *c) {
         json_object_put(root);
         return;
     }
-    if (!c->post && !strcmp(end, "/restart")) {
-        if (!target || send_json(target, 3, 11, NULL))
+    if (!strcmp(end, "/restart")) {
+        if (!target)
+            http_error(c, 503, 1, "device offline");
+        else if (!target->restart_supported)
+            http_error(c, 501, 1, "client restart unsupported");
+        else if (send_json(target, 3, 11, NULL))
             http_error(c, 503, 1, "device unavailable");
         else
             http_reply(c, 200, "{\"error\":0}", 11);

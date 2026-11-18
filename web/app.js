@@ -84,6 +84,7 @@
         const known = {409: '此节点正在处理另一个查询，请稍后刷新。', 503: '节点暂时无法响应，请稍后重试。',
           504: '客户端响应超时，请检查节点是否仍在线。', 501: '此客户端暂不支持该操作。'};
         const details = {'device offline':'节点已离线。','node is online':'节点已上线，不能删除。',
+        'client restart unsupported':'此客户端暂不支持远程重启，请先更新客户端。',
           'node not found':'节点记录已不存在。','current password incorrect':'当前密码不正确。',
           'no package for this platform and version':'没有适合此节点平台和架构的安装包，请先手动安装新版客户端。',
           'invalid account settings':'请填写有效账号和至少 8 位的新密码。'};
@@ -144,16 +145,6 @@
       button.type = 'button'; button.setAttribute('aria-label', button.textContent + ' ' + n.name);
       button.addEventListener('click', event => { event.stopPropagation(); goToDevice(n.name); });
       action.append(button);
-      /* Jump straight to this device's forwarding rules instead of making the
-       * operator scroll after selecting it. */
-      const forward = element('button', 'link-button', '端口转发');
-      forward.type = 'button';
-      forward.setAttribute('aria-label', '查看 ' + n.name + ' 的端口转发');
-      forward.addEventListener('click', event => {
-        event.stopPropagation();
-        goToDevice(n.name, true);
-      });
-      action.append(forward);
       if (active) {
         const restart = element('button', 'link-button', '重启');
         restart.type = 'button';
@@ -161,7 +152,7 @@
         restart.addEventListener('click', event => {
           event.stopPropagation();
           confirm('重启客户端', n.name + ' 将重启，连接会短暂中断。', async () => {
-            await api('/api/v1/device/' + encodeURIComponent(n.name) + '/restart');
+            await api('/api/v1/device/' + encodeURIComponent(n.name) + '/restart', {});
             return '重启指令已发送到 ' + n.name + '。';
           });
         });
@@ -717,8 +708,8 @@
     text('mine-account', state.user || '—');
     text('mine-token', state.installToken || '—');
   }
-  function goToDevice(name, rules = false) {
-    const target = '#/device/' + encodeURIComponent(name) + (rules ? '/rules' : '');
+  function goToDevice(name) {
+    const target = '#/device/' + encodeURIComponent(name);
     if (location.hash === target) route();
     else location.hash = target;
   }

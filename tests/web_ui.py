@@ -29,7 +29,7 @@ def frame(main, sub, obj):
     return struct.pack('<IHH',len(body),main,sub)+body
 
 class Peer:
-    def __init__(self,name,system,token,ca):
+    def __init__(self,name,system,token,ca,restart=False):
         self.name=name;self.apps=[];self.commands=[];self.lock=threading.Lock();self.stop=threading.Event();self.error=None
         self.sock=ssl.create_default_context(cafile=str(ca)).wrap_socket(socket.create_connection(('127.0.0.1',37183),timeout=3),server_hostname='127.0.0.1')
         key=base64.b64encode(secrets.token_bytes(16)).decode()
@@ -41,7 +41,8 @@ class Peer:
         self.buffer=bytearray(self.buffer)
         self.sock.settimeout(None)
         self.send(frame(6,0,{'os':system,'version':'2.0.0','lanIP':'192.0.2.8','hasIPv4':1,
-            'udpNatType':2,'natLevel':2,'tcpNatType':1,'tcpNatSamples':4,'tcpNatDestinationIPs':3}))
+            'udpNatType':2,'natLevel':2,'tcpNatType':1,'tcpNatSamples':4,'tcpNatDestinationIPs':3,
+            'restart':int(restart)}))
         self.reader=threading.Thread(target=self.read_loop,daemon=True);self.reader.start()
         self.heartbeat=threading.Thread(target=self.heartbeat_loop,daemon=True);self.heartbeat.start()
     def exact(self,n):
@@ -142,7 +143,7 @@ def main():
                 client=subprocess.Popen(client_command,env=client_env,stdout=client_log,stderr=subprocess.STDOUT)
                 c=SimpleNamespace(name='web-c-node')
             else:
-                c=Peer('web-c-node','linux-c',token,root/'certs/ca.crt');peers.append(c)
+                c=Peer('web-c-node','linux-c',token,root/'certs/ca.crt',restart=True);peers.append(c)
             go=Peer('web-rich-node','<img src=x onerror=globalThis.__xss=1>',token,root/'certs/ca.crt');peers.append(go)
             go.apps=[{'appName':'<img src=x onerror=globalThis.__xss=1>','protocol':'tcp','srcPort':23456,'dstHost':'127.0.0.1','dstPort':22,'peerNode':c.name,'enabled':1,'isActive':1,'linkMode':'udppunch'}]
             with sync_playwright() as pw:
@@ -195,14 +196,39 @@ def main():
                 assert page.locator('#install-token').get_attribute('type')=='password'
                 results['uint64_token_mask_restored_on_install_page']=True
                 view('devices')
-                if not args.client:
-                    page.get_by_role('button',name='重启 '+c.name,exact=True).click()
-                    with page.expect_response(lambda r: r.url.endswith('/restart')) as restarting:
+                expect(page.locator('#nodes button').filter(has_text='端口转发')).to_have_count(0)
+                def restart_device(name):
+                    page.get_by_role('button',name='重启 '+name,exact=True).click()
+                    with page.expect_response(lambda r: r.url.endswith('/restart') and r.request.method=='POST') as restarting:
                         page.locator('#confirm-action').click()
-                    assert restarting.value.status==200
-                    expect(page.locator('#notice')).to_contain_text('重启指令已发送')
+                    return restarting.value.status
+
+                assert restart_device(go.name)==501
+                expect(page.locator('#notice')).to_contain_text('请先更新客户端')
+                assert not any(sub==11 for sub,_ in go.commands)
+                results['legacy_client_restart_is_reported_as_unsupported']=True
+
+                if args.client:
+                    def logins():
+                        return (root/'client.log').read_text(encoding='utf-8').count('"message":"gateway authenticated"')
+                    deadline=time.monotonic()+20
+                    while not logins() and time.monotonic()<deadline:
+                        time.sleep(.1)
+                    before=logins()
+                    assert before>0
+                    profile=(root/'config/fastp2p.conf').read_bytes()
+                assert restart_device(c.name)==200
+                expect(page.locator('#notice')).to_contain_text('重启指令已发送')
+                if not args.client:
                     assert any(sub==11 for sub,_ in c.commands)
-                    results['restart_without_a_cached_package']=True
+                else:
+                    deadline=time.monotonic()+20
+                    while logins()<=before and time.monotonic()<deadline and client.poll() is None:
+                        time.sleep(.1)
+                    assert logins()>before and client.poll() is None,'Real client did not reconnect after restart'
+                    assert (root/'config/fastp2p.conf').read_bytes()==profile
+                    results['real_client_reconnects_after_restart_with_same_profile']=True
+                results['restart_without_a_cached_package']=True
                 page.locator('#node-search').fill('no-match');expect(page.locator('#nodes-empty')).to_be_visible()
                 page.locator('#node-search').fill('web-c-node');expect(page.locator('#nodes tr')).to_have_count(1)
                 open_device(c.name);expect(page.locator('#rule-message')).to_contain_text('尚未配置转发规则')
@@ -264,11 +290,11 @@ def main():
                 expect(page.locator('#rules tr')).to_have_count(0)
                 results['capability_fixture_edit_switch_delete_and_XSS_escaping']=True
                 page.set_viewport_size({'width':320,'height':844});view('devices')
-                page.get_by_role('button',name='查看 '+c.name+' 的端口转发',exact=True).click()
+                open_device(c.name)
                 expect(page.locator('#view-device')).to_be_visible()
                 expect(page.locator('.topbar')).to_be_hidden()
                 expect(page.locator('#notice')).to_be_hidden()
-                assert page.url.endswith('/rules')
+                assert page.url.endswith('#/device/'+c.name)
                 expect(page.locator('#rules')).to_contain_text('浏览器测试转发')
                 if not page.evaluate('document.documentElement.scrollWidth <= innerWidth'):
                     results['mobile_overflow']=page.evaluate('Array.from(document.querySelectorAll("body *")).filter(e=>e.getBoundingClientRect().right>innerWidth+1).slice(0,12).map(e=>[e.id,e.className,Math.round(e.getBoundingClientRect().width),Math.round(e.getBoundingClientRect().right)])')

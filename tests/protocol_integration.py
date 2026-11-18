@@ -192,8 +192,8 @@ class WS:
             assert length==len(frame)-8
             if (m,s)==(main,sub):return frame[8:]
         raise AssertionError('Expected frame not received')
-    def report(self):
-        self.send(message(6,0,{'os':'test-c-peer','lanIP':'127.0.0.1','version':'2.0.0','hasIPv4':1,'publicIPPort':31000}))
+    def report(self, restart=False):
+        self.send(message(6,0,{'os':'test-c-peer','lanIP':'127.0.0.1','version':'2.0.0','hasIPv4':1,'publicIPPort':31000,'restart':int(restart)}))
         assert json.loads(self.until(6,7))=={}
     def query(self,peer,credential=token):
         self.send(message(7,0,{'peerNode':peer.name,'token':credential}))
@@ -337,7 +337,12 @@ try:
         assert json.loads(a.until(3,17))['srcPort']==12345
         assert api('/api/v1/device/'+a.name+'/switchapp',{'protocol':'tcp','srcPort':12345,'enabled':1},jwt)[0]==200
         assert json.loads(a.until(3,9))['appName']=='new'
-        assert api('/api/v1/device/'+a.name+'/restart',jwt=jwt)[0]==200;a.until(3,11)
+        assert api('/api/v1/device/'+b.name+'/restart',{},jwt)[0]==501
+        a.report(restart=True)
+        assert api('/api/v1/device/'+a.name+'/restart',{},jwt)[0]==200
+        assert a.until(3,11)==b'null'
+        assert api('/api/v1/device/'+a.name+'/restart',jwt=jwt)[0]==200
+        assert a.until(3,11)==b'null'
         results['management_apps_async_edit_switch_restart']=True
         replacement=WS(a.name,source='127.0.0.2');assert a.closed();replacement.report()
         assert replacement.push(b,2,{'id':8})['error']==1
