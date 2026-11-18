@@ -43,6 +43,7 @@ static void signal_stop(int signal) {
 }
 static void http_reply(struct connection *c, int status, const void *data, size_t len);
 static void http_error(struct connection *c, int status, unsigned code, const char *detail);
+static void reply_apps(struct connection *http, const char *node, json_object *reported);
 static void upload_abort(struct connection *c);
 static int query(struct lws *wsi, const char *name, char *out, size_t capacity);
 static unsigned query_integer(struct lws *wsi, const char *name, unsigned limit, unsigned fallback);
@@ -76,7 +77,7 @@ static void unregister_node(struct connection *c) {
         struct connection *http = c->pending_http;
         c->pending_http = NULL;
         http->request_node = NULL;
-        http_error(http, 503, 1, "device disconnected");
+        reply_apps(http, c->node, NULL);
     }
 }
 static int enqueue(struct connection *c, uint16_t main, uint16_t sub, const void *body,
@@ -416,7 +417,7 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
         struct connection *http = c->pending_http;
         c->pending_http = NULL;
         http->request_node = NULL;
-        http_reply(http, 200, data, len);
+        reply_apps(http, c->node, gw_get(j, "Apps"));
     } else if (main == 7 && sub == 0) {
         json_object *response = json_object_new_object();
         const char *name = gw_string(j, "peerNode");
@@ -1111,6 +1112,68 @@ static int start_release_worker(int cleanup_only) {
     return 0;
 }
 
+static json_object *reported_rule(json_object *reported, json_object *rule) {
+    if (!reported || !json_object_is_type(reported, json_type_array))
+        return NULL;
+    for (size_t i = 0; i < json_object_array_length(reported); ++i) {
+        json_object *app = json_object_array_get_idx(reported, i);
+        if (gw_integer(app, "srcPort") == gw_integer(rule, "srcPort") &&
+            !strcmp(gw_string(app, "protocol"), gw_string(rule, "protocol")) &&
+            !strcmp(gw_string(app, "peerNode"), gw_string(rule, "peerNode")))
+            return app;
+    }
+    return NULL;
+}
+
+static void reply_apps(struct connection *http, const char *node, json_object *reported) {
+    if (!http->authorized || http->auth_generation != g.auth_generation) {
+        http_error(http, 401, 1, "unauthorized");
+        return;
+    }
+    json_object *stored = gw_store_rules(g.db, node);
+    if (!stored) {
+        http_error(http, 503, 1, "rule storage unavailable");
+        return;
+    }
+    json_object *root = json_object_new_object(), *apps = json_object_new_array();
+    for (size_t i = 0; i < json_object_array_length(stored); ++i) {
+        json_object *entry = json_object_array_get_idx(stored, i);
+        json_object *rule = gw_get(entry, "rule");
+        if (!rule)
+            continue;
+        json_object_get(rule);
+        json_object_object_del(rule, "_config");
+        json_object_object_del(rule, "linkMode");
+        int enabled = gw_integer(entry, "enabled") == 1;
+        gw_ju(rule, "enabled", enabled);
+        if (!strcmp(gw_string(rule, "protocol"), "socks5")) {
+            gw_ju(rule, "hasPassword", *gw_string(rule, "Password") != '\0');
+            json_object_object_del(rule, "Password");
+        }
+        json_object *live = enabled ? reported_rule(reported, rule) : NULL;
+        /* Older clients only confirm the underlying transport. A positive
+         * linkReady also confirms the authenticated forwarding session. */
+        int active = gw_integer(live, "linkReady") == 1;
+        int waiting = json_object_is_type(reported, json_type_array) &&
+                      (!live || gw_integer(live, "isActive") == 0);
+        gw_ju(rule, "isActive", active);
+        gw_js(rule, "linkStatus", !enabled ? "disabled" : active ? "connected" :
+                                  waiting ? "waiting" : "unknown");
+        if (active) {
+            const char *mode = gw_string(live, "linkMode");
+            if (!strcmp(mode, "relay") || !strcmp(mode, "intranet") ||
+                !strcmp(mode, "tcp4") || !strcmp(mode, "tcppunch") ||
+                !strcmp(mode, "udp4") || !strcmp(mode, "udppunch"))
+                gw_js(rule, "linkMode", mode);
+        }
+        json_object_array_add(apps, rule);
+    }
+    json_object_put(stored);
+    json_object_object_add(root, "Apps", apps);
+    http_json(http, 200, root);
+    json_object_put(root);
+}
+
 static void handle_http(struct connection *c) {
     if (c->handled || c->request_node)
         return;
@@ -1594,38 +1657,12 @@ static void handle_http(struct connection *c) {
     }
 
     if (!c->post && !strcmp(end, "/apps")) {
-        json_object *list = gw_store_rules(g.db, name);
-        if (!list) {
-            http_error(c, 503, 1, "rule storage unavailable");
-            return;
-        }
-        /* Flatten the stored payloads into the shape the console already reads. */
-        json_object *apps = json_object_new_array();
-        for (size_t i = 0; i < json_object_array_length(list); ++i) {
-            json_object *entry = json_object_array_get_idx(list, i);
-            json_object *rule = gw_get(entry, "rule");
-            if (!rule)
-                continue;
-            json_object_get(rule);
-            json_object_object_del(rule,"_config");
-            if (!gw_get(rule, "enabled"))
-                gw_ju(rule, "enabled", gw_integer(entry, "enabled"));
-            if (!strcmp(gw_string(rule, "protocol"), "socks5")) {
-                /* Never send a stored SOCKS5 password back to the browser; tell
-                 * it whether one exists so editing can require re-entry. */
-                int has = *gw_string(rule, "Password") != 0;
-                json_object_object_del(rule, "Password");
-                gw_ju(rule, "hasPassword", (uint64_t)has);
-            }
-            json_object_object_add(rule, "isActive",
-                json_object_new_int(target && gw_integer(entry, "enabled") ? 1 : 0));
-            json_object_array_add(apps, rule);
-        }
-        json_object_put(list);
-        json_object *root = json_object_new_object();
-        json_object_object_add(root, "Apps", apps);
-        http_json(c, 200, root);
-        json_object_put(root);
+        if (target && !target->pending_http && !send_json(target, 3, 7, NULL)) {
+            target->pending_http = c;
+            c->request_node = target;
+            c->deadline = gw_mono_ms() + 1500;
+        } else
+            reply_apps(c, name, NULL);
         return;
     }
     if (!strcmp(end, "/restart")) {
@@ -2272,7 +2309,7 @@ static void tick(lws_sorted_usec_list_t *sul) {
             struct connection *http = c->pending_http;
             c->pending_http = NULL;
             http->request_node = NULL;
-            http_error(http, 504, 9, "timeout");
+            reply_apps(http, c->node, NULL);
         }
     }
     lws_sul_schedule(g.context, 0, &g.tick, tick, 10000);

@@ -246,15 +246,19 @@
     if (active) loadApps();
     else ruleMessage(node ? `节点已离线，登记信息保留在 SQLite 中。首次在线：${node.firstSeen || '—'}；最近离线：${node.lastOffline || '—'}。` : '尚未选择节点。');
   }
-  async function loadApps() {
+  async function loadApps({quiet = false} = {}) {
     if (Number(state.selected?.isActive) !== 1 || state.loadingApps) return;
     const node = state.selected, selection = state.selection;
-    state.loadingApps = true; $('refresh-apps').disabled = true; ruleMessage('正在读取网关保存的规则…');
+    state.loadingApps = true; $('refresh-apps').disabled = true;
+    if (!quiet) ruleMessage('正在读取网关保存的规则…');
     try {
       const body = await api('/api/v1/device/' + encodeURIComponent(node.name) + '/apps');
       if (selection !== state.selection || !state.token) return;
-      state.apps = Array.isArray(body.Apps) ? body.Apps : Array.isArray(body.apps) ? body.apps : [];
-      renderApps();
+      const apps = Array.isArray(body.Apps) ? body.Apps : Array.isArray(body.apps) ? body.apps : [];
+      if (!quiet || JSON.stringify(state.apps) !== JSON.stringify(apps)) {
+        state.apps = apps;
+        renderApps();
+      }
       ruleMessage(body.TunError || (state.apps.length ? '' : '此节点尚未配置转发规则。'), Boolean(body.TunError));
     } catch (error) { if (selection === state.selection && state.token) ruleMessage(error.message, true); }
     finally { if (selection === state.selection) { state.loadingApps = false; $('refresh-apps').disabled = false; } }
@@ -268,9 +272,14 @@
       const source = element('td'); source.append(element('span', 'badge protocol', String(app.protocol || '').toUpperCase()), document.createTextNode(' :' + app.srcPort)); row.append(source);
       const destination = element('td', 'rule-destination'); destination.append(element('span', '', app.peerNode || '—'),
         element('small', 'mono', app.protocol === 'socks5' ? '动态目标 · SOCKS5' : `${app.dstHost || '—'}:${app.dstPort || '—'}`)); row.append(destination);
-      row.append(element('td', 'mono', app.linkMode || '—'));
-      const status = element('td'), active = Number(app.isActive) === 1, enabled = app.enabled === undefined || Number(app.enabled) === 1;
-      status.append(element('span', 'badge ' + (active ? 'online' : enabled ? 'warning' : 'offline'), active ? '● 已连接' : enabled ? '等待连接' : '已停用')); row.append(status);
+      const status = element('td'), enabled = app.enabled === undefined || Number(app.enabled) === 1;
+      const connected = enabled && app.linkStatus === 'connected';
+      row.append(element('td', 'mono', connected && app.linkMode ? app.linkMode : '—'));
+      const label = !enabled ? '已停用' : connected ? '● 已连接' :
+        app.linkStatus === 'waiting' ? '等待连接' : '链路待确认';
+      const badge = element('span', 'badge ' + (connected ? 'online' : enabled ? 'warning' : 'offline'), label);
+      if (connected) badge.title = '与出口节点的加密隧道已建立';
+      status.append(badge); row.append(status);
       const actions = element('td');
       if (state.selected.capabilities?.editForward && ['tcp', 'udp', 'socks5'].includes(app.protocol)) {
         const nodeName = state.selected.name;
@@ -762,7 +771,10 @@
       renderDevicePage(node);
       $('device-rules').hidden = false;
       if (state.selected?.name !== name || state.selected.isActive !== node.isActive) selectNode(node);
-      else state.selected = node;
+      else {
+        state.selected = node;
+        if (!$('rule-dialog').open && !$('confirm-dialog').open) loadApps({quiet: true});
+      }
       return true;
     } catch (error) {
       if (current()) clearDevice(name, error.message);

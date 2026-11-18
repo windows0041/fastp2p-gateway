@@ -78,10 +78,10 @@ class Peer:
                     if body.get('srcPort0'):
                         self.apps=[a for a in self.apps if (a['srcPort'],a['protocol'])!=(body['srcPort0'],body['protocol0'])]
                     if body.get('srcPort'):
-                        self.apps.append({**body,'enabled':1,'isActive':1,'linkMode':'ipv4' if body.get('punchPriority')==3 else 'udppunch'})
+                        self.apps.append({**body,'enabled':1,'isActive':1,'linkReady':1,'linkMode':'tcppunch' if body.get('punchPriority')==3 else 'udppunch'})
                 elif sub==10:
                     for app in self.apps:
-                        if (app['srcPort'],app['protocol'])==(body['srcPort'],body['protocol']):app.update(enabled=body['enabled'],isActive=body['enabled'])
+                        if (app['srcPort'],app['protocol'])==(body['srcPort'],body['protocol']):app.update(enabled=body['enabled'],isActive=body['enabled'],linkReady=body['enabled'])
                 elif sub==17:
                     self.apps=[a for a in self.apps if (a['srcPort'],a['protocol'])!=(body['srcPort'],body['protocol'])]
         except (OSError,EOFError):pass
@@ -145,7 +145,7 @@ def main():
             else:
                 c=Peer('web-c-node','linux-c',token,root/'certs/ca.crt',restart=True);peers.append(c)
             go=Peer('web-rich-node','<img src=x onerror=globalThis.__xss=1>',token,root/'certs/ca.crt');peers.append(go)
-            go.apps=[{'appName':'<img src=x onerror=globalThis.__xss=1>','protocol':'tcp','srcPort':23456,'dstHost':'127.0.0.1','dstPort':22,'peerNode':c.name,'enabled':1,'isActive':1,'linkMode':'udppunch'}]
+            go.apps=[{'appName':'<img src=x onerror=globalThis.__xss=1>','protocol':'tcp','srcPort':23456,'dstHost':'127.0.0.1','dstPort':22,'peerNode':c.name,'enabled':1,'isActive':0,'linkReady':0,'linkMode':'udppunch'}]
             with sync_playwright() as pw:
                 browser=pw.chromium.launch(headless=True,**({'executable_path':args.browser_executable} if args.browser_executable else {}))
                 context=browser.new_context(ignore_https_errors=True,viewport={'width':1440,'height':1040})
@@ -278,6 +278,9 @@ def main():
                 assert seeded==200,seeded
                 page.locator('#refresh-apps').click()
                 expect(page.locator('#rules')).to_contain_text('<img src=x onerror=globalThis.__xss=1>')
+                expect(page.locator('#rules')).to_contain_text('等待连接')
+                expect(page.locator('#rules')).not_to_contain_text('已连接')
+                expect(page.locator('#rules')).not_to_contain_text('udppunch')
                 assert page.evaluate('globalThis.__xss') is None
                 page.locator('#rules').get_by_role('button',name='编辑',exact=True).click();page.locator('#rule-name').fill('Go edited')
                 page.locator('#rule-target').fill('8080');page.locator('#save-rule').click();expect(page.locator('#rules')).to_contain_text('Go edited')
@@ -286,6 +289,8 @@ def main():
                 page.locator('#rules').get_by_role('button',name='启用',exact=True).click();page.locator('#confirm-action').click()
                 expect(page.locator('#rules')).to_contain_text('已连接')
                 page.screenshot(path=str(args.output/'desktop.png'),full_page=True)
+                go.apps=[{**app,'isActive':0,'linkReady':0} for app in go.apps]
+                expect(page.locator('#rules')).to_contain_text('等待连接',timeout=13000)
                 page.locator('#rules').get_by_role('button',name='删除',exact=True).click();page.locator('#confirm-action').click()
                 expect(page.locator('#rules tr')).to_have_count(0)
                 results['capability_fixture_edit_switch_delete_and_XSS_escaping']=True

@@ -327,11 +327,29 @@ try:
         r.send(message(5,0,{'peerNode':b.name}));assert json.loads(r.until(5,1))['relay']==a.name
         a.send(message(5,0,{'peerNode':b.name,'exclude':[r.name]}));assert json.loads(a.until(5,1))['relay']==''
         results['relay_offer_selects_a_third_node_and_never_an_endpoint']=True
-        # Rules are served from the database, not by asking the client.
-        assert api('/api/v1/device/'+a.name+'/apps',jwt=jwt)==(200,{'Apps':[]})
+        def live_rules(reported):
+            replies=[]
+            request=threading.Thread(target=lambda:replies.append(api('/api/v1/device/'+a.name+'/apps',jwt=jwt)))
+            request.start()
+            assert a.until(3,7)==b'null'
+            a.send(message(6,3,{'Apps':reported}))
+            request.join(4)
+            assert replies and replies[0][0]==200,replies
+            return replies[0][1]['Apps']
+
+        # Configuration comes from SQLite; the authenticated node supplies link status.
+        assert live_rules([])==[]
         assert api('/api/v1/device/'+a.name+'/app',{'appName':'new','protocol':'tcp','srcPort':12345,'peerNode':b.name,'dstHost':'127.0.0.1','dstPort':22},jwt)[0]==200
         assert json.loads(a.until(3,9))['appName']=='new'
-        assert api('/api/v1/device/'+a.name+'/apps',jwt=jwt)[1]['Apps'][0]['appName']=='new'
+        report={'protocol':'tcp','srcPort':12345,'peerNode':b.name,'linkMode':'tcppunch'}
+        rule,=live_rules([{**report,'isActive':0,'linkReady':0}])
+        assert rule['appName']=='new' and rule['linkStatus']=='waiting' and not rule['isActive'] and 'linkMode' not in rule
+        rule,=live_rules([{**report,'isActive':1}])
+        assert rule['linkStatus']=='unknown' and not rule['isActive']
+        rule,=live_rules([{**report,'isActive':1,'linkReady':1,'peerNode':r.name}])
+        assert rule['linkStatus']=='waiting' and not rule['isActive']
+        rule,=live_rules([{**report,'isActive':1,'linkReady':1}])
+        assert rule['linkStatus']=='connected' and rule['isActive']==1 and rule['linkMode']=='tcppunch'
         # Disabling pushes RULE_REMOVE (3/17); re-enabling pushes RULE_APPLY (3/9).
         assert api('/api/v1/device/'+a.name+'/switchapp',{'protocol':'tcp','srcPort':12345,'enabled':0},jwt)[0]==200
         assert json.loads(a.until(3,17))['srcPort']==12345
@@ -364,12 +382,12 @@ try:
         persistent=http.client.HTTPSConnection('127.0.0.1',10008,context=context,timeout=3)
         for _ in range(40):assert api('/healthz',connection=persistent)[0]==200
         persistent.close();results['HTTP_keepalive_transactions']=True
-        # Rule queries are served from the database now, so they never wait on the
-        # node and cannot time out or fail because the node went away.
+        # A session that does not answer still returns its persisted rules.
         replies=[]
         thread=threading.Thread(target=lambda:replies.append(api('/api/v1/device/'+replacement.name+'/apps',jwt=jwt,timeout=15)))
         thread.start();thread.join(5)
         assert replies and replies[0][0]==200
+        assert replies[0][1]['Apps'][0]['linkStatus']=='unknown'
         concurrent=[]
         threads=[threading.Thread(target=lambda:concurrent.append(api('/api/v1/device/'+replacement.name+'/apps',jwt=jwt)))
                  for _ in range(4)]
