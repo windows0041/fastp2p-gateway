@@ -15,12 +15,10 @@ import socketserver
 import sqlite3
 import ssl
 import subprocess
-import sys
 import tempfile
 import threading
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'client/tests'))
 from certificates import create_certificates
 
 p=argparse.ArgumentParser();p.add_argument('--gateway',required=True);p.add_argument('--client',required=True)

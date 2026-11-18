@@ -1522,7 +1522,12 @@ static void handle_http(struct connection *c) {
         return;
     }
     if (!c->post && !strcmp(c->uri, "/api/v1/nodes")) {
-        char search[256];
+        char search[256], name[256];
+        int exact = !query(c->wsi, "name=", name, sizeof(name));
+        if (exact && !gw_node_valid(name)) {
+            http_error(c, 400, 1, "invalid node name");
+            return;
+        }
         if (query(c->wsi, "search=", search, sizeof(search)))
             search[0] = 0;
         unsigned limit = query_integer(c->wsi, "limit=", 256, 100);
@@ -1531,7 +1536,7 @@ static void handle_http(struct connection *c) {
             http_error(c, 400, 1, "invalid page size");
             return;
         }
-        json_object *j = gw_store_list(g.db, search, limit, offset);
+        json_object *j = exact ? gw_store_list_exact(g.db, name) : gw_store_list(g.db, search, limit, offset);
         if (!j) {
             http_error(c, 503, 1, "node storage unavailable");
             return;

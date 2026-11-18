@@ -349,7 +349,8 @@ static void date(json_object *object, const char *key, sqlite3_int64 value) {
         strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc);
     gw_js(object, key, buffer);
 }
-json_object *gw_store_list(sqlite3 *db, const char *search, unsigned limit, unsigned offset) {
+static json_object *list_nodes(sqlite3 *db, const char *search, unsigned limit, unsigned offset,
+                               int exact) {
     if (!search || strlen(search) > 255 || !limit || limit > 256)
         return NULL;
     char pattern[514];
@@ -361,13 +362,15 @@ json_object *gw_store_list(sqlite3 *db, const char *search, unsigned limit, unsi
         pattern[used++] = *p;
     }
     pattern[used++] = '%'; pattern[used] = 0;
-    const char *where = " WHERE name LIKE ?1 ESCAPE '\\' OR hostname LIKE ?1 ESCAPE '\\' OR ip LIKE ?1 ESCAPE '\\' OR ipv6 LIKE ?1 ESCAPE '\\' OR lanip LIKE ?1 ESCAPE '\\' OR os LIKE ?1 ESCAPE '\\'";
+    const char *where = exact ? " WHERE name = ?1" :
+        " WHERE name LIKE ?1 ESCAPE '\\' OR hostname LIKE ?1 ESCAPE '\\' OR ip LIKE ?1 ESCAPE '\\' OR ipv6 LIKE ?1 ESCAPE '\\' OR lanip LIKE ?1 ESCAPE '\\' OR os LIKE ?1 ESCAPE '\\'";
+    const char *filter = exact ? search : pattern;
     char query[1024];
     sqlite3_stmt *statement = NULL;
     snprintf(query, sizeof(query), "SELECT count(*) FROM nodes%s", where);
     if (sqlite3_prepare_v2(db, query, -1, &statement, NULL) != SQLITE_OK)
         return NULL;
-    sqlite3_bind_text(statement, 1, pattern, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(statement, 1, filter, -1, SQLITE_TRANSIENT);
     if (sqlite3_step(statement) != SQLITE_ROW) {
         sqlite3_finalize(statement);
         return NULL;
@@ -378,7 +381,7 @@ json_object *gw_store_list(sqlite3 *db, const char *search, unsigned limit, unsi
     snprintf(query, sizeof(query), "SELECT name,node_id,hostname,ip,ipv6,lanip,mac,os,version,nat,bandwidth,first_seen,last_seen,last_offline,online,tcp_nat,tcp_nat_samples,tcp_nat_ips,nat6,tcp_nat6,tcp_nat6_samples,tcp_nat6_ips,families,nat_level,tcp_level FROM nodes%s ORDER BY online DESC,name LIMIT ?2 OFFSET ?3", where);
     if (sqlite3_prepare_v2(db, query, -1, &statement, NULL) != SQLITE_OK)
         return NULL;
-    sqlite3_bind_text(statement, 1, pattern, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(statement, 1, filter, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(statement, 2, (int)limit);
     sqlite3_bind_int64(statement, 3, (sqlite3_int64)offset);
     json_object *root = json_object_new_object(), *nodes = json_object_new_array();
@@ -422,6 +425,12 @@ json_object *gw_store_list(sqlite3 *db, const char *search, unsigned limit, unsi
         return NULL;
     }
     return root;
+}
+json_object *gw_store_list(sqlite3 *db, const char *search, unsigned limit, unsigned offset) {
+    return list_nodes(db, search, limit, offset, 0);
+}
+json_object *gw_store_list_exact(sqlite3 *db, const char *name) {
+    return list_nodes(db, name, 1, 0, 1);
 }
 
 /* --- Persistent per-node rules -------------------------------------------

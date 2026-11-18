@@ -8,10 +8,12 @@ Linux C11 网关提供 HTTPS/WSS、NAT 探测、连接协调、中继候选选�
 
 ## 构建
 
+以下源码构建命令均从本仓库根目录运行。网关的构建目标是 Linux，Windows 上可使用 WSL。
+
 静态构建（推荐，产出一个不依赖发行版运行库的可执行文件）：
 
 ```sh
-bash c/gateway/scripts/build-static.sh x86_64
+bash scripts/build-static.sh x86_64
 ```
 
 > 双栈注意：静态构建现在以 `-DLWS_IPV6=ON` 编译 libwebsockets，静态包同样支持 `--bind6`/`--apibind6`。若使用系统库构建（Debian 的 `libwebsockets-dev` 默认 `-DLWS_IPV6=ON`）行为一致。
@@ -21,8 +23,9 @@ bash c/gateway/scripts/build-static.sh x86_64
 ```sh
 sudo apt-get install build-essential cmake ninja-build pkg-config python3 \
   libwebsockets-dev libjson-c-dev libssl-dev libsqlite3-dev
-cmake -S c/gateway -B build/c-gateway -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build/c-gateway --parallel
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
 ```
 
 ## 部署
@@ -31,18 +34,22 @@ cmake --build build/c-gateway --parallel
 bash scripts/tls/generate-cert.sh /private/tls gateway.example.com 127.0.0.1
 ```
 
+发行压缩包中的证书脚本位于 `scripts/generate-cert.sh`，网关程序位于 `bin/fastp2p-gateway`。
+
 复制 `.env.example` 到私有环境文件，配置强管理密码、16 位数字接入 Token（首位非零）、证书和数据库路径。`FASTP2P_PUBLIC_HOST` 必须是客户端可达、且出现在服务器证书 SAN 中的地址。`FASTP2P_CA_FILE` 指向公开 CA，用于专用客户端的公开信任配置；公有 CA 可省略并使用客户端系统信任库。
 
 加载私有环境变量后启动：
 
 ```sh
-build/c-gateway/fastp2p-gateway --bind 0.0.0.0 --apibind 127.0.0.1
+build/fastp2p-gateway --bind 0.0.0.0 --apibind 127.0.0.1
 ```
+
+从源码部署并使用控制台的 GitHub 版本同步时，先执行 `cmake --install build --prefix /opt/fastp2p`，再启动 `/opt/fastp2p/bin/fastp2p-gateway`。安装会把同步脚本放在网关程序旁边。
 
 IPv6 双栈按需追加参数，每族独立监听、互不影响；不给 `--bind6` 时行为与纯 IPv4 版本完全一致：
 
 ```sh
-build/c-gateway/fastp2p-gateway --bind 0.0.0.0 --bind6 :: --apibind 127.0.0.1 --altwss6 443
+build/fastp2p-gateway --bind 0.0.0.0 --bind6 :: --apibind 127.0.0.1 --altwss6 443
 ```
 
 `--bind6`/`--apibind6` 接受 IPv6 字面量（`::`、`::1`、`2001:db8::1`）。WSS、API 与可选 alt WSS 各自再开一个 v6 vhost，NAT 探测端口（TCP 27180–27181、UDP 27180–27183）也按族各绑一套。`FASTP2P_PUBLIC_HOST` 或 `--public-host` 写成 v6 字面量时，升级下载 URL、安装脚本与控制台预设会自动加方括号。
@@ -54,7 +61,7 @@ SQLite 使用回滚日志和同步写入，文件权限 0600；通过 SQLite 在
 Docker 从仓库根目录构建：
 
 ```sh
-docker build -f c/gateway/Dockerfile -t fastp2p-gateway:local .
+docker build -t fastp2p-gateway:local .
 ```
 
 挂载 TLS 证书、公开 CA 及可写 `/var/lib/fastp2p`，设置相同环境变量。容器管理端的宿主机映射只绑定回环地址。systemd 示例见 `deploy/fastp2p-c-gateway.service`。
@@ -63,7 +70,7 @@ docker build -f c/gateway/Dockerfile -t fastp2p-gateway:local .
 
 首次启动使用 FASTP2P_USER / FASTP2P_PASSWORD 初始化管理账号；可自行指定，不使用固定默认账号密码。之后以 SQLite 中保存的账号为准，修改环境变量不会覆盖已保存的设置。
 
-Web 右上角“账号设置”可修改账号和密码，需要输入当前密码，新密码至少 8 位。设置以 PBKDF2-SHA256 加盐哈希保存，修改后旧管理会话失效，需重新登录；客户端接入 Token 与连接保持不变。
+在侧栏打开“我”，点击“修改账号与密码”。需要输入当前密码，新密码至少 8 位。设置以 PBKDF2-SHA256 加盐哈希保存，修改后旧管理会话失效，需重新登录；客户端接入 Token 与连接保持不变。
 
 忘记密码时，先停止网关服务，设置新的 FASTP2P_USER / FASTP2P_PASSWORD，携带原有证书、Token 与数据库配置运行 fastp2p-gateway --reset-admin，然后重启服务。此操作重置管理账号，不删除节点或轮换客户端 Token。
 
@@ -73,7 +80,7 @@ Web 右上角“账号设置”可修改账号和密码，需要输入当前密�
 
 Linux 控制台只提供一个通用 shell 安装脚本：`GET /api/v1/update/install?platform=linux`。脚本包含各架构最新可用包的版本、长度、SHA-256、网关地址、公开 CA 和独立系统服务脚本，不包含 ELF；执行时自动识别 CPU，从网关的公开 WSS 端口通过 HTTPS 下载原始程序。设备需要 curl 或启用 TLS 的 GNU wget。Token 只放在 16 位数字的下载文件名中，不进入共享缓存；下载器用私有配置文件传递 `Authorization: FastP2P <Token>`，不泄露到 URL 或下载器参数。下载端点保留旧客户端的 query Token 兼容，只允许获取程序，不授予管理权限。客户端远程升级接口仍提供原始可执行文件，按架构存储的包不受 UI 合并影响。旧的指定架构、版本的安装 URL 仍可使用，返回包含该版本各架构清单的通用脚本。已清理旧包时需重新下载脚本。修改安装脚本后须重新构建网关（Docker 构建上下文使用仓库根目录）。
 
-专用客户端包通过 c/common/bootstrap.json 预置本网关地址和公开 CA，用户只需输入 16 位数字 Token。更换服务器 CA 或地址后需要重新构建专用客户端。
+专用客户端包通过 [客户端仓库的 `common/bootstrap.json`](https://github.com/windows0041/fastp2p/blob/main/common/bootstrap.json) 预置网关地址和公开 CA，用户只需输入 16 位数字 Token。更换服务器 CA 或地址后需要重新构建专用客户端。
 
 网关 2.0.7 内置的 Linux 安装脚本在新程序验证启动成功后清理历史程序副本，保留配置、证书和诊断日志。客户端 2.0.5 同时处理远程升级后的旧可执行文件及已退出升级进程留下的临时程序；安装失败仍保留回滚所需文件。
 

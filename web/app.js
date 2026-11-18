@@ -1,7 +1,8 @@
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
-  const state = {token: '', installToken: '', nodes: [], selected: null, apps: [], updates: [],
+  const state = {token: '', installToken: '', user: '', installPlatform: 'windows',
+    nodes: [], selected: null, apps: [], updates: [],
     refreshing: false, loadingApps: false, selection: 0, editing: null, confirm: null,
     offset: 0, total: 0, registered: 0, upgrades: new Map(), skippedUpgrades: []};
   /* The console keeps its session in sessionStorage: it survives a reload, but
@@ -51,12 +52,14 @@
     $('rule-message').classList.toggle('error', error);
   }
   function logout(expired = false) {
-    state.token = state.installToken = ''; state.nodes = []; state.apps = []; state.selected = null;
+    state.token = state.installToken = state.user = '';
+    state.nodes = []; state.apps = []; state.updates = []; state.selected = null;
     state.upgrades.clear(); state.skippedUpgrades = []; renderUpgradeProgress();
     persist();
     state.selection++; $('console').hidden = true; $('login-screen').hidden = false;
     state.offset = state.total = state.registered = 0; $('node-search').value = '';
     $('install-token').value = ''; $('password').value = ''; $('nodes').replaceChildren(); $('rules').replaceChildren();
+    text('mine-account', ''); text('mine-token', '');
     for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
     $('login-error').hidden = !expired;
     if (expired) text('login-error', '会话已过期，请重新登录。');
@@ -138,7 +141,7 @@
       seen.append(document.createTextNode(n.activetime ? String(n.activetime) : '—'));
       row.append(seen);
       const action = element('td'), button = element('button', 'link-button', active ? '编辑' : '查看记录');
-      button.type = 'button'; button.setAttribute('aria-label', '编辑 ' + n.name);
+      button.type = 'button'; button.setAttribute('aria-label', button.textContent + ' ' + n.name);
       button.addEventListener('click', event => { event.stopPropagation(); goToDevice(n.name); });
       action.append(button);
       /* Jump straight to this device's forwarding rules instead of making the
@@ -148,22 +151,17 @@
       forward.setAttribute('aria-label', '查看 ' + n.name + ' 的端口转发');
       forward.addEventListener('click', event => {
         event.stopPropagation();
-        goToDevice(n.name);
+        goToDevice(n.name, true);
       });
       action.append(forward);
-      /* Restart through the upgrade channel: the same build is re-installed, so the
-       * client comes back up without any new protocol on either side. */
-      if (active && n.version) {
+      if (active) {
         const restart = element('button', 'link-button', '重启');
         restart.type = 'button';
         restart.setAttribute('aria-label', '重启 ' + n.name);
         restart.addEventListener('click', event => {
           event.stopPropagation();
-          confirm('重启客户端', n.name + ' 将重新安装当前版本并重启，连接会短暂中断。', async () => {
-            await api('/api/v1/device/' + encodeURIComponent(n.name) + '/upgrade',
-                      {version: n.version});
-            await new Promise(resolve => setTimeout(resolve, 800));
-            await refresh();
+          confirm('重启客户端', n.name + ' 将重启，连接会短暂中断。', async () => {
+            await api('/api/v1/device/' + encodeURIComponent(n.name) + '/restart');
             return '重启指令已发送到 ' + n.name + '。';
           });
         });
@@ -200,20 +198,11 @@
           });
         }); action.append(remove);
       }
-      row.append(action); row.addEventListener('click', () => {
-        location.hash = '#/device/' + encodeURIComponent(n.name);
-      });
+      row.append(action); row.addEventListener('click', () => goToDevice(n.name));
       $('nodes').append(row);
     }
     text('table-count', state.registered); text('nav-count', state.registered);
     text('search-count', query ? `匹配 ${state.total} / ${state.registered} 个节点` : `共 ${state.registered} 个已登记节点`);
-    // Reloading #/device/<name> reopens that device once the rows exist.
-    const wanted = deviceFromHash();
-    if (wanted && state.selected?.name !== wanted) {
-      const match = (state.nodes || []).find(n => n.name === wanted);
-      if (match) { selectNode(match); showDeviceCrumb(wanted); }
-    } else if (wanted) showDeviceCrumb(wanted); // restored from the address
-    if (!window.__routed) { window.__routed = true; route(); }
     text('node-page', state.total ? `${state.offset + 1}–${state.offset + state.nodes.length} / ${state.total}` : '0 / 0');
     $('previous-nodes').disabled = !state.offset;
     $('next-nodes').disabled = state.offset + 100 >= state.total;
@@ -240,15 +229,11 @@
       text('queue-limit', '上限 ' + bytes(status.queueLimitBytes)); text('version', status.version);
       text('sidebar-version', 'C Gateway ' + status.version); text('wss-port', 'WSS :' + status.wssPort + ' · HTTPS');
       state.user = status.user;
-    const accountLabel = $('account-name');
-    if (accountLabel) accountLabel.textContent = status.user; text('updated-at', '更新于 ' + new Date().toLocaleTimeString('zh-CN', {hour12: false}));
-      if (state.selected) {
-        const selected = state.nodes.find(n => n.name === state.selected.name);
-        if (!selected) selectNode(null);
-        else if (selected.isActive !== state.selected.isActive) selectNode(selected);
-        else state.selected = selected;
-      }
+      renderMinePage();
+      text('updated-at', '更新于 ' + new Date().toLocaleTimeString('zh-CN', {hour12: false}));
       renderNodes();
+      const device = deviceRoute();
+      if (device) refreshDevice(device[1]);
       loadUpdates();
     } catch (error) { if (state.token === token) {
       message(error.message, true); text('gateway-label', '连接中断'); $('gateway-status').classList.add('offline');
@@ -271,7 +256,7 @@
     else ruleMessage(node ? `节点已离线，登记信息保留在 SQLite 中。首次在线：${node.firstSeen || '—'}；最近离线：${node.lastOffline || '—'}。` : '尚未选择节点。');
   }
   async function loadApps() {
-    if (!state.selected || state.loadingApps) return;
+    if (Number(state.selected?.isActive) !== 1 || state.loadingApps) return;
     const node = state.selected, selection = state.selection;
     state.loadingApps = true; $('refresh-apps').disabled = true; ruleMessage('正在读取网关保存的规则…');
     try {
@@ -367,13 +352,16 @@
         best = update.version;
     return best;
   }
-  function renderUpdates() {
-    $('updates').replaceChildren();
+  function availableDownloads() {
     const linux = state.updates.filter(update => /^linux(?:-|$)/.test(update.platform));
     const downloads = state.updates.filter(update => !/^linux(?:-|$)/.test(update.platform));
     if (linux.length) downloads.unshift({platform: 'linux', automatic: true,
       uploadedAt: Math.max(...linux.map(update => update.uploadedAt || 0))});
-    for (const update of downloads) {
+    return downloads;
+  }
+  function renderUpdates() {
+    $('updates').replaceChildren();
+    for (const update of availableDownloads()) {
       const row = element('tr');
       row.append(element('td', '', update.automatic ? 'Linux（自动识别架构）' : update.platform),
         element('td', 'mono', update.automatic ? '按架构选择最新版' : update.version),
@@ -415,7 +403,7 @@
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      if (update.platform === 'android') text('update-message', '安装 APK 后，在客户端安装 Token 对话框中点「安卓接入」。');
+      if (update.platform === 'android') text('update-message', '安装 APK 后，打开客户端并输入安装 Token。');
       else if (update.platform.startsWith('linux')) text('update-message', '执行 sh ' + filename[1] + '（也可用 bash）。脚本自动识别 CPU，从本网关下载对应程序，保留节点身份与配置，安装到 /usr/local/fastp2p 并设置开机启动。需要 curl 或 GNU wget，请勿修改文件名中的 Token。');
     } catch (error) {
       $('update-message').classList.add('error');
@@ -445,14 +433,20 @@
     $('sync-release').disabled = false;
   }
   async function loadUpdates() {
+    const token = state.token;
+    if (!token) return;
     try {
       const body = await api('/api/v1/updates');
+      if (state.token !== token) return;
       state.updates = Array.isArray(body.updates) ? body.updates : [];
       renderUpdates();
+      renderInstall();
       // The per-node upgrade buttons depend on which versions are available.
       if (state.nodes.length) renderNodes();
     } catch (error) {
-      $('update-message').classList.add('error'); text('update-message', error.message);
+      if (state.token === token) {
+        $('update-message').classList.add('error'); text('update-message', error.message);
+      }
     }
   }
   function confirm(title, description, action) {
@@ -523,17 +517,19 @@
     try {
       const login = await api('/api/v1/user/login', {user: $('username').value, password: $('password').value});
       if (typeof login.token !== 'string' || typeof login.installToken !== 'string') throw new Error('无法读取登录凭据。');
-      state.token = login.token; state.installToken = login.installToken; $('password').value = '';
-    persist();
-      $('login-screen').hidden = true; $('console').hidden = false; message(''); await refresh();
+      state.token = login.token; state.installToken = login.installToken;
+      state.user = $('username').value; $('password').value = '';
+      persist();
+      $('login-screen').hidden = true; $('console').hidden = false;
+      route();
+      await refresh();
       syncRelease();
     } catch (error) { text('login-error', error.message); $('login-error').hidden = false; }
     finally { $('login-submit').disabled = false; }
   });
-  const accountTrigger = $('account-button');
-  if (accountTrigger) accountTrigger.addEventListener('click', () => {
+  $('mine-account-edit').addEventListener('click', () => {
     $('account-form').reset(); $('account-error').hidden = true;
-    $('account-user').value = $('account-name').textContent;
+    $('account-user').value = state.user;
     $('account-dialog').showModal();
   });
   $('account-form').addEventListener('submit', async event => {
@@ -656,18 +652,16 @@
   });
   $('copy-token').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(state.installToken); text('copy-token', '已复制'); }
-    catch { $('install-token').type = 'text'; $('install-token').select(); text('copy-token', '请手动复制'); }
+    catch {
+      $('install-token').type = 'text'; $('install-token').select();
+      text('reveal-token', '隐藏'); text('copy-token', '请手动复制');
+    }
   });
-  // Which build is offered for a platform: the console already tracks the packages
-  // it has synced or uploaded, so the install page is just a filtered view of them.
-  function installPlatforms() {
-    return ['windows', 'macos', 'linux', 'android'];
-  }
-  function renderInstall(platform) {
+  function renderInstall() {
     const list = $('install-list');
-    if (!list) return;
-    const wanted = (state.updates || []).filter(u =>
-      u.platform === platform || String(u.platform).startsWith(platform + '-'));
+    const platform = state.installPlatform;
+    const wanted = availableDownloads().filter(update =>
+      update.platform === platform || update.platform.startsWith(platform + '-'));
     if (!wanted.length) {
       list.replaceChildren(element('p', 'muted install-empty',
         '暂无该平台的安装包，请先在「客户端升级」里同步或上传。'));
@@ -675,119 +669,119 @@
     }
     list.replaceChildren(...wanted.map(update => {
       const row = element('div', 'install-row');
-      const label = update.label || update.platform || platform;
-      row.append(element('span', 'install-label', label + ' · ' + update.version));
+      const label = update.automatic ? 'Linux 通用安装脚本' : (update.label || update.platform) + ' · ' + update.version;
+      row.append(element('span', 'install-label', label));
       const button = element('button', 'button primary', '下载');
       button.type = 'button';
-      button.setAttribute('aria-label', '下载 ' + label + ' ' + update.version);
+      button.setAttribute('aria-label', '下载 ' + label);
       button.addEventListener('click', () => downloadInstaller(update, button));
       row.append(button);
       return row;
     }));
   }
   function selectInstallTab(platform) {
-    for (const tab of document.querySelectorAll('.install-tab'))
-      tab.classList.toggle('active', tab.dataset.platform === platform);
-    for (const tab of document.querySelectorAll('.install-tab'))
-      tab.setAttribute('aria-selected', tab.dataset.platform === platform ? 'true' : 'false');
-    renderInstall(platform);
+    state.installPlatform = platform;
+    for (const tab of document.querySelectorAll('.install-tab')) {
+      const selected = tab.dataset.platform === platform;
+      tab.classList.toggle('active', selected);
+      tab.setAttribute('aria-selected', String(selected));
+    }
+    renderInstall();
   }
   for (const tab of document.querySelectorAll('.install-tab'))
     tab.addEventListener('click', () => selectInstallTab(tab.dataset.platform));
-  // Top navigation drives the existing views and dialogs; the console stays one page.
-  for (const item of document.querySelectorAll('.side-action'))
-    item.addEventListener('click', () => {
-      for (const other of document.querySelectorAll('.topnav-item'))
-        other.classList.toggle('active', other === item);
-      const view = item.dataset.view;
-      if (view === 'install') { location.hash = '#/install'; return; }
-      if (view === 'account') { location.hash = '#/mine'; return; }
-      if (view === 'overview') { location.hash = '#/overview'; return; }
-      location.hash = '#/devices';
-    });
-  // A device has its own address so a page can be linked or reloaded: the hash records
-  // the selection and the breadcrumb takes the operator back to the list.
-  function deviceFromHash() {
-    const match = /^#\/device\/(.+)$/.exec(location.hash || '');
-    return match ? decodeURIComponent(match[1]) : '';
-  }
-  function showDeviceCrumb(name) {
-    const crumb = $('device-crumb');
-    if (!crumb) return;
-    crumb.hidden = !name;
-    if (name) text('device-crumb-name', name + ' 的端口转发');
-  }
-  function openDevicePage(name, scroll) {
-    const node = (state.nodes || []).find(n => n.name === name);
-    if (!node) return false;
-    selectNode(node);
-    showDeviceCrumb(name);
-    if (scroll) {
-      const panel = document.querySelector('.rules-panel');
-      if (panel) panel.scrollIntoView({behavior: 'smooth', block: 'start'});
-    }
-    return true;
-  }
-  $('device-back').addEventListener('click', () => {
-    if (location.hash) location.hash = '';
-    else { showDeviceCrumb(''); window.scrollTo({top: 0, behavior: 'smooth'}); }
-  });
-  window.addEventListener('hashchange', () => {
-    const name = deviceFromHash();
-    if (name) openDevicePage(name, true);
-    else showDeviceCrumb('');
-  });
-  // ---- pages ---------------------------------------------------------------
+  const navItems = document.querySelectorAll('.nav-item[data-view]');
+  for (const item of navItems)
+    item.addEventListener('click', () => { location.hash = '#/' + item.dataset.view; });
+
   const PAGES = ['overview', 'devices', 'device', 'install', 'mine'];
   function showView(name) {
-    for (const page of PAGES) {
-      const el = $('view-' + page);
-      if (el) el.hidden = page !== name;
+    for (const page of PAGES) $('view-' + page).hidden = page !== name;
+    for (const item of navItems) {
+      const current = item.dataset.view === (name === 'device' ? 'devices' : name);
+      item.classList.toggle('active', current);
+      if (current) {
+        item.setAttribute('aria-current', 'page');
+        text('page-title', name === 'device' ? '设备详情' : item.dataset.label);
+      } else item.removeAttribute('aria-current');
     }
-    for (const item of document.querySelectorAll('.side-action'))
-      item.classList.toggle('active',
-        item.dataset.view === (name === 'device' ? 'devices' :
-                               name === 'mine' ? 'account' : name));
   }
   function renderInstallPage() {
-    const android = $('android-install');
-    if (android) android.href = 'intent://install?token=' +
-      encodeURIComponent(state.installToken || '') +
-      '#Intent;scheme=fastp2p;package=top.fastp2p.cclient;end';
-    const input = $('install-token');
-    if (input) { input.value = state.installToken || ''; input.type = 'password'; }
+    $('install-token').value = state.installToken;
+    $('install-token').type = 'password';
     text('reveal-token', '显示');
-    selectInstallTab('windows');
+    text('copy-token', '复制 Token');
+    renderInstall();
   }
   function renderMinePage() {
     text('mine-account', state.user || '—');
     text('mine-token', state.installToken || '—');
   }
-  function goToDevice(name) {
-    const target = '#/device/' + encodeURIComponent(name);
-    if (location.hash === target) route();   // same device again: still navigate
+  function goToDevice(name, rules = false) {
+    const target = '#/device/' + encodeURIComponent(name) + (rules ? '/rules' : '');
+    if (location.hash === target) route();
     else location.hash = target;
   }
-  function route() {
+  function deviceRoute() {
+    return /^#\/device\/([A-Za-z0-9_-]{8,31})(\/rules)?$/.exec(location.hash);
+  }
+  async function route() {
     const hash = location.hash || '#/overview';
-    const device = /^#\/device\/(.+)$/.exec(hash);
+    const device = deviceRoute();
+    message('');
+    window.scrollTo(0, 0);
     if (device) {
-      const name = decodeURIComponent(device[1]);
-      const node = (state.nodes || []).find(n => n.name === name);
+      const [, name, rules] = device;
       showView('device');
-      if (node) { selectNode(node); renderDevicePage(node); }
+      if (state.selected?.name !== name) clearDevice(name, '正在获取设备记录…');
+      if (await refreshDevice(name) && rules && location.hash === hash)
+        $('device-rules').scrollIntoView({block: 'start'});
       return;
     }
+    if (state.selected) selectNode(null);
     if (hash === '#/install') { showView('install'); renderInstallPage(); return; }
     if (hash === '#/mine') { showView('mine'); renderMinePage(); return; }
     if (hash === '#/overview' || hash === '#/') { showView('overview'); return; }
     showView('devices');
   }
+  function clearDevice(name, message) {
+    if (state.selected) selectNode(null);
+    text('device-heading', name);
+    text('device-summary', message);
+    $('device-fields').replaceChildren();
+    $('device-rules').hidden = true;
+  }
+  let deviceRequest = 0;
+  async function refreshDevice(name) {
+    const token = state.token;
+    if (!token) return false;
+    const request = ++deviceRequest;
+    const current = () => state.token === token && request === deviceRequest && deviceRoute()?.[1] === name;
+    try {
+      let node = state.nodes.find(n => n.name === name);
+      if (!node) {
+        const result = await api('/api/v1/nodes?name=' + encodeURIComponent(name));
+        node = result.nodes?.[0];
+      }
+      if (!current()) return false;
+      if (!node) {
+        clearDevice(name, '找不到此设备的登记记录。');
+        return false;
+      }
+      renderDevicePage(node);
+      $('device-rules').hidden = false;
+      if (state.selected?.name !== name || state.selected.isActive !== node.isActive) selectNode(node);
+      else state.selected = node;
+      return true;
+    } catch (error) {
+      if (current()) clearDevice(name, error.message);
+      return false;
+    }
+  }
   function renderDevicePage(node) {
     text('device-heading', (node.alias || node.name));
     text('device-summary', (node.os || '未知系统') + ' · ' + (node.ip || '—'));
     const fields = $('device-fields');
-    if (!fields) return;
     const rows = [
       ['设备名字', node.name],
       ['操作系统', node.os || '—'],
@@ -807,11 +801,8 @@
     }));
   }
   window.addEventListener('hashchange', route);
-  route();
   $('device-back-inline').addEventListener('click', () => { location.hash = '#/devices'; });
-  $('mine-account-edit').addEventListener('click', () => $('account-dialog').showModal());
   $('side-logout').addEventListener('click', () => logout()); $('refresh').addEventListener('click', refresh);
-  $('overview-nav').addEventListener('click', () => window.scrollTo({top: 0, behavior: 'smooth'}));
   let searchTimer;
   $('node-search').addEventListener('input', () => {
     state.offset = 0; renderNodes(); clearTimeout(searchTimer); searchTimer = setTimeout(refresh, 200);
@@ -829,8 +820,11 @@
       state.token = saved.token;
       state.installToken = typeof saved.installToken === 'string' ? saved.installToken : '';
       $('login-screen').hidden = true; $('console').hidden = false;
-      refresh();
-      syncRelease();
     }
   } catch { try { sessionStorage.removeItem(STORE); } catch { /* ignore */ } }
+  route();
+  if (state.token) {
+    refresh();
+    syncRelease();
+  }
 })();

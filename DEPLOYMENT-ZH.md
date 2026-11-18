@@ -78,7 +78,7 @@ ssh -N -L 127.0.0.1:11008:127.0.0.1:10008 root@gz.itq.cc.cd
 
 随后访问 <https://127.0.0.1:11008/>。SSH 使用已有服务器登录方式；浏览器需要信任该网关的公开自签 CA。此转发只提供本机访问，不开放公网管理端口。
 
-Web 右上角“账号设置”可修改账号和密码，需输入当前密码。账号保存在 SQLite，环境变量只用于首次初始化。修改后旧会话失效，节点 Token 与连接保持不变。忘记密码时按 [网关说明](README.md) 的 `--reset-admin` 流程恢复。
+在控制台侧栏的“我”页面点击“修改账号与密码”，需输入当前密码。账号保存在 SQLite，环境变量只用于首次初始化。修改后旧会话失效，节点 Token 与连接保持不变。忘记密码时按 [网关说明](README.md) 的 `--reset-admin` 流程恢复。
 
 离线节点可以在列表中确认删除；在线节点拒绝删除。删除登记记录不撤销接入 Token，仍持有效 Token 的设备再次上线会重新登记。
 
@@ -106,4 +106,4 @@ SQLite 位于 `/var/lib/fastp2p/nodes.sqlite3`，schema 2，回滚日志 `DELETE
 - [网关 1.0.1](https://github.com/windows0041/fastp2p/releases/tag/fastp2p-gateway-v1.0.1)：Debian 12/13 网关包、Docker 镜像归档和 SHA256SUMS.txt。
 - [客户端 CI](https://github.com/windows0041/fastp2p/actions/runs/41321183816) 与 [网关 CI](https://github.com/windows0041/fastp2p/actions/runs/41320065551) 均成功，稳定 Release 已公开。
 
-桌面安装及 Android 接入命令见 [项目 README](../../README.md)。部署其他网关或更换地址 / CA 时，应更新公开 `c/common/bootstrap.json` 并重新构建专用客户端；勿将接入 Token 或私钥写入此文件。
+桌面安装及 Android 接入命令见 [客户端 README](https://github.com/windows0041/fastp2p/blob/main/README.md)。部署其他网关或更换地址 / CA 时，应更新 [客户端仓库的 `common/bootstrap.json`](https://github.com/windows0041/fastp2p/blob/main/common/bootstrap.json) 并重新构建专用客户端。此文件仅用于公开配置，接入 Token 和私钥应保存在私有配置中。

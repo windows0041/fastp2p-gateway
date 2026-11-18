@@ -22,6 +22,7 @@ int gw_store_claim(sqlite3 *db, const char *requested, const char *hostname,
 int gw_store_save(sqlite3 *db, const struct connection *node, int online);
 int gw_store_count(sqlite3 *db, uint64_t *count);
 json_object *gw_store_list(sqlite3 *db, const char *search, unsigned limit, unsigned offset);
+json_object *gw_store_list_exact(sqlite3 *db, const char *name);
 int gw_device_valid(const char *device);
 int gw_store_manual_status(sqlite3 *db, const char *name);
 int gw_store_resolve(sqlite3 *db, const char *device, char name[32]);

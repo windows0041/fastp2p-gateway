@@ -30,9 +30,7 @@ jobs:
       - name: Version and console assets
         run: |
           ./build/fastp2p-gateway --version
-          # The assets are embedded compressed, so their exact size is what can be
-          # checked here; the docker job boots the binary and fetches them.
-          ls -l build/web-assets.h 2>/dev/null || true
+          test -s build/web_assets.h
   static:
     runs-on: ubuntu-24.04
     timeout-minutes: 45

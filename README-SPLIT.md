@@ -7,7 +7,7 @@ release mirror and the web console. It was extracted from the fastp2p repository
 Layout notes for the extraction:
 
 - `common/` holds the code shared with the client (enrollment, config merge, UTF-8
-  helpers). It is a copy; the client repository keeps its own `c/common`.
+  helpers). The [client repository](https://github.com/windows0041/fastp2p) keeps its own copy in `common/`.
 - `client-scripts/` holds `linux-installer.sh` and `fastp2p-service.sh` because the
   gateway embeds them and serves them to nodes. They are copies of the client's
   scripts and must be kept in step with them.

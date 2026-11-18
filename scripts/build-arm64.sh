@@ -7,7 +7,7 @@
 #
 # Usage: build-arm64.sh [--sysroot DIR] [--out DIR] [--skip-install]
 set -euo pipefail
-repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
+repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 sysroot=${FASTP2P_ARM64_SYSROOT:-/opt/arm64-sysroot}
 out=${FASTP2P_ARM64_OUT:-$repository/dist}
 build=${FASTP2P_ARM64_BUILD:-$repository/build/c-gateway-arm64}

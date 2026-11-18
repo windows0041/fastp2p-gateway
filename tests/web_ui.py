@@ -16,13 +16,11 @@ import sqlite3
 import ssl
 import struct
 import subprocess
-import sys
 import tempfile
 import threading
 import time
 from types import SimpleNamespace
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]/'client/tests'))
 from certificates import create_certificates
 from playwright.sync_api import sync_playwright, expect
 
@@ -72,7 +70,7 @@ class Peer:
                 if opcode not in (0,2):continue
                 length,main,sub=struct.unpack('<IHH',payload[:8]);assert length==len(payload)-8
                 if main!=3:continue
-                if sub not in (7,9,10,18):continue
+                if sub not in (7,9,10,11,17,18):continue
                 body=json.loads(payload[8:]);self.commands.append((sub,body))
                 if sub==7:self.send(frame(6,3,{'Apps':self.apps}))
                 elif sub==9:
@@ -83,6 +81,8 @@ class Peer:
                 elif sub==10:
                     for app in self.apps:
                         if (app['srcPort'],app['protocol'])==(body['srcPort'],body['protocol']):app.update(enabled=body['enabled'],isActive=body['enabled'])
+                elif sub==17:
+                    self.apps=[a for a in self.apps if (a['srcPort'],a['protocol'])!=(body['srcPort'],body['protocol'])]
         except (OSError,EOFError):pass
         except Exception as error:self.error=type(error).__name__
     def close(self):
@@ -100,14 +100,15 @@ def main():
     with tempfile.TemporaryDirectory(prefix='fastp2p-web-') as directory:
         root=Path(directory)
         assert root.resolve().parent == Path(tempfile.gettempdir()).resolve() and root.name.startswith('fastp2p-web-')
-        create_certificates(root/'certs','127.0.0.1')
+        wsl=['wsl.exe','--'] if args.wsl else []
+        create_certificates(root/'certs','127.0.0.1',wsl=wsl)
         username='web-admin';password=secrets.token_urlsafe(24);token='9999999999999999'
         env=os.environ.copy();env.update(FASTP2P_USER=username,FASTP2P_PASSWORD=password,FASTP2P_TOKEN=token)
         if args.wsl:
-            remote=subprocess.check_output(['wsl.exe','-d','Debian','-u','maoyu','--','wslpath','-a',root.as_posix()],text=True).strip()
+            remote=subprocess.check_output([*wsl,'wslpath','-a',root.as_posix()],text=True).strip()
             (root/'launch.sh').write_text('#!/bin/bash\nset -e\necho $$ > "$1/gateway.pid"\nshift\nexec "$@"\n',newline='\n')
             env['WSLENV']=env.get('WSLENV','')+':FASTP2P_USER:FASTP2P_PASSWORD:FASTP2P_TOKEN'
-            command=['wsl.exe','-d','Debian','-u','maoyu','--','bash',remote+'/launch.sh',remote,args.gateway,
+            command=[*wsl,'bash',remote+'/launch.sh',remote,args.gateway,
                      '--cert',remote+'/certs/server.crt','--key',remote+'/certs/server.key']
         else:command=[str(Path(args.gateway).resolve()),'--cert',str(root/'certs/server.crt'),'--key',str(root/'certs/server.key')]
         command+=['--database',remote+'/nodes.sqlite3' if args.wsl else str(root/'nodes.sqlite3'),
@@ -132,7 +133,7 @@ def main():
                 (root/'config/fastp2p.conf').write_text(json.dumps(client_config))
                 if args.wsl:
                     (root/'launch-client.sh').write_text('#!/bin/bash\nset -e\necho $$ > "$1/client.pid"\nshift\nexec "$@"\n',newline='\n')
-                    client_command=['wsl.exe','-d','Debian','-u','maoyu','--','bash',remote+'/launch-client.sh',remote,args.client,
+                    client_command=[*wsl,'bash',remote+'/launch-client.sh',remote,args.client,
                         '--config',remote+'/config/fastp2p.conf']
                 else:client_command=[str(Path(args.client).resolve()),'--config',str(root/'config/fastp2p.conf')]
                 client_command+=['--run-seconds','600']
@@ -157,6 +158,13 @@ def main():
                 def login():
                     page.locator('#username').fill(username);page.locator('#password').fill(password);page.locator('#login-submit').click()
                     expect(page.locator('#online-count')).to_have_text('2',timeout=15000)
+                    expect(page.locator('#login-error')).to_be_hidden()
+                def view(name):
+                    page.locator(f'.nav-item[data-view="{name}"]').click()
+                    expect(page.locator(f'#view-{name}')).to_be_visible()
+                def open_device(name, action='编辑'):
+                    page.get_by_role('button',name=f'{action} {name}',exact=True).click()
+                    expect(page.locator('#device-heading')).to_have_text(name)
                 login();results['login_and_authenticated_overview']=True
                 # A reload must keep the operator signed in: the console stores its
                 # session per tab instead of only in memory.
@@ -164,6 +172,12 @@ def main():
                 expect(page.locator('#online-count')).to_have_text('2',timeout=15000)
                 expect(page.locator('#login-screen')).to_be_hidden()
                 results['reload_keeps_the_console_session']=True
+                view('devices'); view('overview')
+                expect(page.locator('#overview-nav')).to_have_attribute('aria-current','page')
+                expect(page.locator('#page-title')).to_have_text('网络总览')
+                page.evaluate('location.hash = "#/device/%"')
+                expect(page.locator('#view-devices')).to_be_visible()
+                results['sidebar_navigation_and_invalid_device_hash']=True
                 nat_row=page.locator('#nodes tr').filter(has_text='web-rich-node')
                 # The cell shows the level; the mapping observation lives in the
                 # tooltip together with the caveat that filtering was not probed.
@@ -173,14 +187,25 @@ def main():
                 assert '对称（端口随机）' in nat_title, nat_title
                 assert '未做入站过滤探测' in nat_title, nat_title
                 results['separate_udp_tcp_mapping_labels_and_filtering_caveat']=True
-                page.locator('#token-button').click();expect(page.locator('#install-token')).to_have_value(__import__('re').compile(r'^[1-9][0-9]{15}$'))
+                view('install');expect(page.locator('#install-token')).to_have_value(token)
+                page.reload();expect(page.locator('#install-token')).to_have_value(token)
                 assert page.locator('#install-token').get_attribute('type')=='password'
                 page.locator('#reveal-token').click();assert page.locator('#install-token').get_attribute('type')=='text'
-                page.locator('#close-token').click();expect(page.locator('#install-token')).to_have_value('')
-                results['uint64_token_mask_and_clear']=True
+                view('devices');view('install')
+                assert page.locator('#install-token').get_attribute('type')=='password'
+                results['uint64_token_mask_restored_on_install_page']=True
+                view('devices')
+                if not args.client:
+                    page.get_by_role('button',name='重启 '+c.name,exact=True).click()
+                    with page.expect_response(lambda r: r.url.endswith('/restart')) as restarting:
+                        page.locator('#confirm-action').click()
+                    assert restarting.value.status==200
+                    expect(page.locator('#notice')).to_contain_text('重启指令已发送')
+                    assert any(sub==11 for sub,_ in c.commands)
+                    results['restart_without_a_cached_package']=True
                 page.locator('#node-search').fill('no-match');expect(page.locator('#nodes-empty')).to_be_visible()
                 page.locator('#node-search').fill('web-c-node');expect(page.locator('#nodes tr')).to_have_count(1)
-                page.get_by_role('button',name='查看 web-c-node 的规则',exact=True).click();expect(page.locator('#rule-message')).to_contain_text('尚未配置转发规则')
+                open_device(c.name);expect(page.locator('#rule-message')).to_contain_text('尚未配置转发规则')
                 page.locator('#add-rule').click();page.locator('#rule-name').fill('浏览器测试转发');page.locator('#rule-source').fill('24567')
                 page.locator('#rule-peer').fill(go.name);page.locator('#rule-target').fill('80');page.locator('#rule-transport').select_option('tcp')
                 page.locator('#save-rule').click()
@@ -210,7 +235,8 @@ def main():
                     assert page.get_by_role('button',name='配置节点 web-c-node',exact=True).count()==0
                     assert page.locator('#config-fields').count()==0
                     results['manual_config_endpoint_retired_410_and_no_dialog']=True
-                page.locator('#node-search').fill('');page.locator('#nodes tr').filter(has_text=go.name).get_by_role('button').click()
+                page.locator('#device-back-inline').click();expect(page.locator('#view-devices')).to_be_visible()
+                page.locator('#node-search').fill('');open_device(go.name)
                 # Rules are served from the gateway database, so seed the row the
                 # console will read instead of relying on a client-side report.
                 seeded=page.evaluate('''async ([name]) => {
@@ -237,34 +263,55 @@ def main():
                 page.locator('#rules').get_by_role('button',name='删除',exact=True).click();page.locator('#confirm-action').click()
                 expect(page.locator('#rules tr')).to_have_count(0)
                 results['capability_fixture_edit_switch_delete_and_XSS_escaping']=True
-                page.set_viewport_size({'width':390,'height':844});page.get_by_role('button',name='查看 '+c.name+' 的规则',exact=True).click()
+                page.set_viewport_size({'width':320,'height':844});view('devices')
+                page.get_by_role('button',name='查看 '+c.name+' 的端口转发',exact=True).click()
+                expect(page.locator('#view-device')).to_be_visible()
+                expect(page.locator('.topbar')).to_be_hidden()
+                expect(page.locator('#notice')).to_be_hidden()
+                assert page.url.endswith('/rules')
                 expect(page.locator('#rules')).to_contain_text('浏览器测试转发')
                 if not page.evaluate('document.documentElement.scrollWidth <= innerWidth'):
                     results['mobile_overflow']=page.evaluate('Array.from(document.querySelectorAll("body *")).filter(e=>e.getBoundingClientRect().right>innerWidth+1).slice(0,12).map(e=>[e.id,e.className,Math.round(e.getBoundingClientRect().width),Math.round(e.getBoundingClientRect().right)])')
                     page.screenshot(path=str(args.output/'mobile-failure.png'),full_page=True)
                     raise AssertionError('Mobile page overflows viewport')
-                page.screenshot(path=str(args.output/'mobile.png'),full_page=True);results['responsive_mobile_layout']=True
+                page.screenshot(path=str(args.output/'mobile.png'),full_page=True)
+                for name in ('overview','devices','install','mine'):
+                    view(name)
+                    assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'),name
+                results['responsive_mobile_layout']=True
                 page.set_viewport_size({'width':1440,'height':1040})
+                view('devices')
                 page.route('**/api/v1/nodes?*',lambda route:route.fulfill(status=401,content_type='application/json',body='{"error":1}'))
                 page.locator('#refresh').click();expect(page.locator('#login-screen')).to_be_visible()
                 expect(page.locator('#login-error')).to_contain_text('过期');page.unroute('**/api/v1/nodes?*');login()
                 results['expired_session_returns_to_login']=True
                 go.close();peers.remove(go);page.locator('#refresh').click();expect(page.locator('#online-count')).to_have_text('1')
                 row=page.locator('#nodes tr').filter(has_text=go.name)
-                expect(row).to_contain_text('离线');row.get_by_role('button',name='查看 '+go.name+' 的规则',exact=True).click()
+                expect(row).to_contain_text('离线');open_device(go.name,'查看记录')
                 expect(page.locator('#rule-message')).to_contain_text('登记信息保留在 SQLite')
                 expect(page.locator('#add-rule')).to_be_disabled()
                 results['offline_node_retained_and_read_only']=True
                 for i in range(110):
                     archived=Peer('zz-history-'+str(i).zfill(3),'fixture',token,root/'certs/ca.crt')
                     archived.close()
-                page.locator('#refresh').click();expect(page.locator('#nav-count')).to_have_text('112')
+                view('devices');page.locator('#refresh').click();expect(page.locator('#nav-count')).to_have_text('112')
+                expect(page.locator('#nodes tr')).to_have_count(100)
+                page.locator('#next-nodes').click();expect(page.locator('#nodes tr')).to_have_count(12)
+                open_device('zz-history-109','查看记录')
+                page.reload()
+                expect(page.locator('#device-heading')).to_have_text('zz-history-109')
+                expect(page.locator('#device-fields')).to_contain_text('离线')
+                page.evaluate('location.hash = "#/device/absent-device"')
+                expect(page.locator('#device-summary')).to_contain_text('找不到此设备')
+                expect(page.locator('#device-rules')).to_be_hidden()
+                view('devices')
                 expect(page.locator('#nodes tr')).to_have_count(100)
                 page.locator('#next-nodes').click();expect(page.locator('#nodes tr')).to_have_count(12)
                 page.locator('#previous-nodes').click();expect(page.locator('#nodes tr')).to_have_count(100)
                 page.locator('#node-search').fill('zz-history-109');expect(page.locator('#nodes tr')).to_have_count(1)
                 expect(page.locator('#nodes')).to_contain_text('zz-history-109')
                 results['offline_history_pagination_and_search_across_pages']=True
+                results['device_links_resolve_outside_the_first_page']=True
                 page.set_viewport_size({'width':390,'height':844})
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 page.screenshot(path=str(args.output/'offline-mobile.png'),full_page=True)
@@ -279,7 +326,9 @@ def main():
                 page.locator('#node-search').fill(c.name);expect(page.locator('#nodes tr')).to_have_count(1)
                 expect(page.get_by_role('button',name='删除离线节点 '+c.name,exact=True)).to_have_count(0)
                 results['offline_node_delete_confirmation_refresh_and_online_guard']=True
-                page.locator('#account-button').click()
+                view('mine');expect(page.locator('#mine-account')).to_have_text(username)
+                page.locator('#mine-account-edit').click()
+                expect(page.locator('#account-user')).to_have_value(username)
                 page.locator('#account-user').fill('custom-web-admin')
                 page.locator('#current-password').fill('incorrect')
                 new_password=secrets.token_urlsafe(24);page.locator('#new-password').fill(new_password)
@@ -290,7 +339,7 @@ def main():
                 page.locator('#username').fill(username);page.locator('#password').fill(password);page.locator('#login-submit').click()
                 expect(page.locator('#login-error')).to_contain_text('不正确')
                 page.locator('#username').fill('custom-web-admin');page.locator('#password').fill(new_password);page.locator('#login-submit').click()
-                expect(page.locator('#account-name')).to_have_text('custom-web-admin')
+                expect(page.locator('#mine-account')).to_have_text('custom-web-admin')
                 expect(page.locator('#online-count')).to_have_text('1')
                 results['custom_account_current_password_and_sign_in_again']=True
                 # Exercise actual batch selection and the browser's distinction
@@ -313,8 +362,9 @@ def main():
                 with closing(sqlite3.connect(root/'nodes.sqlite3',timeout=5)) as db, db:
                     for arch in ('x86_64','aarch64'):
                         db.execute("INSERT INTO release_packages SELECT ?,version,sha256,size,filename,uploaded_at FROM updates WHERE platform='windows'",('linux-'+arch,))
+                view('install');page.get_by_role('tab',name='Linux',exact=True).click()
                 page.locator('#refresh-updates').click()
-                linux_button=page.get_by_role('button',name='下载 Linux 通用安装脚本',exact=True)
+                linux_button=page.locator('#install-list').get_by_role('button',name='下载 Linux 通用安装脚本',exact=True)
                 expect(linux_button).to_have_count(1)
                 expect(page.locator('#updates')).to_contain_text('Linux（自动识别架构）')
                 expect(page.locator('#updates')).not_to_contain_text('linux-x86_64')
@@ -334,8 +384,9 @@ def main():
                 with closing(sqlite3.connect(root/'nodes.sqlite3',timeout=5)) as db, db:
                     db.execute("INSERT INTO release_packages SELECT 'macos-arm64',version,sha256,size,filename,uploaded_at FROM updates WHERE platform='macos'")
                     db.execute("DELETE FROM updates WHERE platform='macos'")
-                page.locator('#node-search').fill('');page.locator('#refresh').click()
+                view('devices');page.locator('#node-search').fill('');page.locator('#refresh').click()
                 expect(page.locator('#online-count')).to_have_text('3')
+                view('install')
                 page.locator('#upgrade-all').click()
                 with page.expect_response(lambda r:r.url.endswith('/api/v1/upgrades')) as pending:
                     page.locator('#confirm-action').click()
@@ -345,13 +396,15 @@ def main():
                            for item in order['skipped']),order
                 expect(page.locator('#upgrade-message')).to_contain_text('等待客户端重启并上报新版本')
                 expect(page.locator('#upgrade-message')).to_contain_text('旧客户端未上报架构')
+                view('devices')
                 expect(page.get_by_role('button',name='升级节点 '+windows.name+' 到 9.9.9')).to_be_disabled()
                 assert not any(sub==18 for sub,_ in legacy.commands)
                 windows.send(frame(6,0,{'os':'windows-c','version':'9.9.9','lanIP':'192.0.2.8'}))
                 page.locator('#refresh').click()
+                view('install')
                 expect(page.locator('#upgrade-message')).to_contain_text(windows.name+'：已升级到 9.9.9',timeout=15000)
                 results['upgrade_pending_completion_and_skipped_architecture_visible']=True
-                page.locator('#logout').click();expect(page.locator('#login-screen')).to_be_visible()
+                page.locator('#side-logout').click();expect(page.locator('#login-screen')).to_be_visible()
                 expect(page.locator('#upgrade-message')).to_be_hidden()
                 assert not errors,errors
                 context.close();browser.close()
@@ -361,7 +414,7 @@ def main():
             client_failure=False
             if client and client.poll() is None:
                 if args.wsl and (root/'client.pid').exists():
-                    subprocess.run(['wsl.exe','-d','Debian','-u','maoyu','--','kill','-TERM',(root/'client.pid').read_text().strip()],check=True)
+                    subprocess.run([*wsl,'kill','-TERM',(root/'client.pid').read_text().strip()],check=True)
                 else:client.terminate()
                 try:client.wait(timeout=10)
                 except subprocess.TimeoutExpired:client.kill();client.wait()
@@ -373,7 +426,7 @@ def main():
             for peer in peers:peer.close()
             if process and process.poll() is None:
                 if args.wsl and (root/'gateway.pid').exists():
-                    subprocess.run(['wsl.exe','-d','Debian','-u','maoyu','--','kill','-TERM',(root/'gateway.pid').read_text().strip()],check=True)
+                    subprocess.run([*wsl,'kill','-TERM',(root/'gateway.pid').read_text().strip()],check=True)
                 else:process.terminate()
                 try:process.wait(timeout=10)
                 except subprocess.TimeoutExpired:process.kill();process.wait()
