@@ -380,7 +380,8 @@ def main():
                 uploaded=page.evaluate('''async () => {
                     const session=JSON.parse(sessionStorage.getItem('fastp2p.console'));
                     const statuses=[];
-                    for (const [platform,bytes] of [['windows',[77,90,0,0]],['macos',[207,250,237,254]]]) {
+                    const mac = [207,250,237,254,12,0,0,1,0,0,0,0,2,0,0,0,...Array(16).fill(0)];
+                    for (const [platform,bytes] of [['windows',[77,90,0,0]],['macos',mac]]) {
                         const r=await fetch('/api/v1/update?platform='+platform+'&version=9.9.9', {
                             method:'PUT',headers:{Authorization:'Bearer '+session.token},body:new Uint8Array(bytes)});
                         statuses.push(r.status);
@@ -413,8 +414,38 @@ def main():
                 page.locator('#refresh-updates').click();expect(linux_button).to_have_count(0)
                 results['one_linux_download_auto_architecture_token_filename_and_small_script']=True
                 with closing(sqlite3.connect(root/'nodes.sqlite3',timeout=5)) as db, db:
+                    db.execute("INSERT INTO release_packages SELECT 'macos-x86_64',version,sha256,size,filename,uploaded_at FROM updates WHERE platform='macos'")
+                page.get_by_role('tab',name='Mac',exact=True).click()
+                page.locator('#refresh-updates').click()
+                macos_button=page.locator('#install-list').get_by_role('button',name='下载 macOS 通用安装脚本',exact=True)
+                expect(page.locator('#install-list button')).to_have_count(1)
+                expect(page.locator('#updates')).to_contain_text('macOS（自动识别架构）')
+                expect(page.locator('#updates')).not_to_contain_text('macos-x86_64')
+                expect(page.locator('#install-note')).to_contain_text('无需 sudo')
+                with page.expect_download() as downloading, page.expect_response(lambda r:'/api/v1/update/install?' in r.url) as installing:
+                    macos_button.click()
+                assert installing.value.status==200 and installing.value.url.endswith('platform=macos')
+                download=downloading.value
+                assert download.suggested_filename=='fastp2p-macos-'+token+'.sh'
+                body=Path(download.path()).read_bytes()
+                assert body.startswith(b'#!/bin/sh\n') and len(body)<64*1024 and token.encode() not in body
+                assert b"arm64) package_platform='macos'" in body
+                assert b"x86_64) package_platform='macos-x86_64'" in body
+                assert b'FASTP2P_BOOTSTRAP_FILE' in body
+                raw=page.evaluate('''async () => {
+                    const session=JSON.parse(sessionStorage.getItem('fastp2p.console'));
+                    const headers={Authorization:'Bearer '+session.token};
+                    return Promise.all(['macos','macos-x86_64'].map(async platform => {
+                        const response=await fetch('/api/v1/update/install?platform='+platform+'&version=9.9.9',{headers});
+                        return [response.status,new Uint8Array(await response.arrayBuffer())[0]];
+                    }));
+                }''')
+                assert raw==[[200,207],[200,207]],raw
+                results['one_macos_script_with_both_architectures_and_raw_package_compatibility']=True
+                with closing(sqlite3.connect(root/'nodes.sqlite3',timeout=5)) as db, db:
                     db.execute("INSERT INTO release_packages SELECT 'macos-arm64',version,sha256,size,filename,uploaded_at FROM updates WHERE platform='macos'")
                     db.execute("DELETE FROM updates WHERE platform='macos'")
+                    db.execute("DELETE FROM release_packages WHERE platform='macos-x86_64'")
                 view('devices');page.locator('#node-search').fill('');page.locator('#refresh').click()
                 expect(page.locator('#online-count')).to_have_text('3')
                 view('install')

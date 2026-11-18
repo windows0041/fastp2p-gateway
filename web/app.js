@@ -353,24 +353,27 @@
     return best;
   }
   function availableDownloads() {
-    const linux = state.updates.filter(update => /^linux(?:-|$)/.test(update.platform));
-    const downloads = state.updates.filter(update => !/^linux(?:-|$)/.test(update.platform));
-    if (linux.length) downloads.unshift({platform: 'linux', automatic: true,
-      uploadedAt: Math.max(...linux.map(update => update.uploadedAt || 0))});
-    return downloads;
+    const installers = [];
+    for (const [platform, label] of [['linux', 'Linux'], ['macos', 'macOS']]) {
+      const packages = state.updates.filter(update =>
+        update.platform === platform || update.platform.startsWith(platform + '-'));
+      if (packages.length) installers.push({platform, label, automatic: true,
+        uploadedAt: Math.max(...packages.map(update => update.uploadedAt || 0))});
+    }
+    return installers.concat(state.updates.filter(update => !/^(linux|macos)(?:-|$)/.test(update.platform)));
   }
   function renderUpdates() {
     $('updates').replaceChildren();
     for (const update of availableDownloads()) {
       const row = element('tr');
-      row.append(element('td', '', update.automatic ? 'Linux（自动识别架构）' : update.platform),
+      row.append(element('td', '', update.automatic ? update.label + '（自动识别架构）' : update.platform),
         element('td', 'mono', update.automatic ? '按架构选择最新版' : update.version),
         element('td', 'mono', update.automatic ? '按需下载' : bytes(update.size)),
         element('td', 'mono', update.automatic ? '安装时校验 SHA-256' : String(update.sha256 || '').slice(0, 16) + '…'),
         element('td', 'mono', update.uploadedAt
           ? new Date(update.uploadedAt * 1000).toLocaleString('zh-CN', {hour12: false}) : '—'));
       const cell = element('td', '');
-      const button = element('button', 'button', update.automatic ? '下载 Linux 通用安装脚本' : '下载安装包');
+      const button = element('button', 'button', update.automatic ? '下载 ' + update.label + ' 通用安装脚本' : '下载安装包');
       button.type = 'button';
       button.addEventListener('click', () => downloadInstaller(update, button));
       cell.append(button);
@@ -405,6 +408,7 @@
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       if (update.platform === 'android') text('update-message', '安装 APK 后，打开客户端并输入安装 Token。');
       else if (update.platform.startsWith('linux')) text('update-message', '执行 sh ' + filename[1] + '（也可用 bash）。脚本自动识别 CPU，从本网关下载对应程序，保留节点身份与配置，安装到 /usr/local/fastp2p 并设置开机启动。需要 curl 或 GNU wget，请勿修改文件名中的 Token。');
+      else if (update.platform === 'macos') text('update-message', '在 Mac 的终端执行 sh ' + filename[1] + '。脚本会自动选择 Apple Silicon 或 Intel 版本，保留节点身份和配置，并设置当前用户登录后启动。请保留文件名，无需 sudo。');
     } catch (error) {
       $('update-message').classList.add('error');
       text('update-message', error.message);
@@ -660,6 +664,13 @@
   function renderInstall() {
     const list = $('install-list');
     const platform = state.installPlatform;
+    const notes = {
+      windows: 'Windows 首次运行若被 SmartScreen 拦截，请点「更多信息 → 仍要运行」；安装时需要上面的 16 位数字 Token。',
+      macos: '支持 macOS 13 及以上。保留下载文件名，在终端输入 sh 和脚本所在路径执行。脚本自动识别 Apple Silicon 或 Intel，当前用户登录后启动，无需 sudo。',
+      linux: '保留下载文件名，在终端用 sudo sh 加脚本路径执行。脚本自动识别架构，并设置服务开机启动。',
+      android: '安装 APK 后打开客户端，输入上面的 16 位数字 Token。'
+    };
+    text('install-note', notes[platform]);
     const wanted = availableDownloads().filter(update =>
       update.platform === platform || update.platform.startsWith(platform + '-'));
     if (!wanted.length) {
@@ -669,7 +680,7 @@
     }
     list.replaceChildren(...wanted.map(update => {
       const row = element('div', 'install-row');
-      const label = update.automatic ? 'Linux 通用安装脚本' : (update.label || update.platform) + ' · ' + update.version;
+      const label = update.automatic ? update.label + ' 通用安装脚本' : (update.label || update.platform) + ' · ' + update.version;
       row.append(element('span', 'install-label', label));
       const button = element('button', 'button primary', '下载');
       button.type = 'button';

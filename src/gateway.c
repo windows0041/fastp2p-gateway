@@ -1,7 +1,7 @@
 #include "gateway.h"
 #include "web_assets.h"
 #include "enrollment.h"
-#include "linux_installer.h"
+#include "installer.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <getopt.h>
@@ -937,10 +937,11 @@ static int version_compare(const char *left, const char *right) {
     }
 }
 
-/* A single downloader selects the newest available package for each CPU.
- * Old generic manual packages are classified from their ELF header, never run. */
-static int linux_installer_packages(const char *wanted,struct gw_linux_package out[GW_LINUX_ARCH_COUNT],size_t *count) {
-    struct gw_linux_package selected[GW_LINUX_ARCH_COUNT]={0};
+/* Classify generic manual uploads from their executable headers. */
+static int installer_packages(const struct gw_installer *installer,const char *wanted,
+                              struct gw_install_package out[GW_INSTALLER_MAX_ARCHES],size_t *count) {
+    struct gw_install_package selected[GW_INSTALLER_MAX_ARCHES]={0};
+    size_t prefix_length=strlen(installer->platform);
     char minimum_version[32]="";
     if(!*wanted)gw_store_release_version(g.db,minimum_version);
     json_object *list=gw_store_updates(g.db);
@@ -948,32 +949,33 @@ static int linux_installer_packages(const char *wanted,struct gw_linux_package o
     for(size_t i=0;i<json_object_array_length(list);i++){
         json_object *row=json_object_array_get_idx(list,i);
         const char *platform=gw_string(row,"platform"),*version=gw_string(row,"version");
-        if(strcmp(platform,"linux") && strncmp(platform,"linux-",6))continue;
+        int generic=!strcmp(platform,installer->platform);
+        if(!generic && (strncmp(platform,installer->platform,prefix_length) ||
+                        platform[prefix_length]!='-'))continue;
         if((*wanted && strcmp(wanted,version)) || !gw_store_package_key_valid(platform,version))continue;
         /* Leases keep old downloads retrievable. Newly generated installers start
          * at the last mirrored release, including on architectures it dropped. */
         if(*minimum_version && version_compare(version,minimum_version)<0)continue;
-        const char *arch=platform+6;char sha[65],filename[260];uint64_t size=0;
+        char sha[65],filename[260];uint64_t size=0;
         if(gw_store_update_find(g.db,platform,version,sha,filename,&size))continue;
-        if(!strcmp(platform,"linux")){
+        unsigned arches=0;
+        if(generic){
             char path[700];update_path(path,sizeof(path),filename);
-            arch=gw_linux_payload_arch(path);
-            if(!arch)continue;
+            arches=installer->payload_arches(path);
         }
-        for(size_t k=0;k<GW_LINUX_ARCH_COUNT;k++){
-            if(strcmp(arch,gw_linux_arches[k]))continue;
-            struct gw_linux_package *p=selected+k;
+        for(size_t k=0;k<installer->count;k++){
+            if(generic ? !(arches & (1u<<k)) : strcmp(platform+prefix_length+1,installer->arches[k]))continue;
+            struct gw_install_package *p=selected+k;
             int comparison=version_compare(version,p->version);
-            if(p->arch && (comparison<0 || (!comparison && strcmp(p->platform,"linux"))))break;
-            p->arch=gw_linux_arches[k];p->size=size;
+            if(p->arch && (comparison<0 || (!comparison && (generic || strcmp(p->platform,installer->platform)))))continue;
+            p->arch=installer->arches[k];p->size=size;
             snprintf(p->platform,sizeof(p->platform),"%s",platform);
             snprintf(p->version,sizeof(p->version),"%s",version);
             snprintf(p->sha,sizeof(p->sha),"%s",sha);
-            break;
         }
     }
     json_object_put(list);*count=0;
-    for(size_t k=0;k<GW_LINUX_ARCH_COUNT;k++)if(selected[k].arch){
+    for(size_t k=0;k<installer->count;k++)if(selected[k].arch){
         if(gw_store_package_lease(g.db,selected[k].platform,selected[k].version,(uint64_t)time(NULL)+600))return -1;
         out[(*count)++]=selected[k];
     }
@@ -1318,7 +1320,11 @@ static void handle_http(struct connection *c) {
             return;
         }
         int has_version=!query(c->wsi,"version=",version,sizeof(version));
-        int is_linux=!strcmp(platform,"linux") || !strncmp(platform,"linux-",6);
+        const struct gw_installer *script=NULL;
+        if(!strcmp(platform,"linux") || !strncmp(platform,"linux-",6))
+            script=&gw_linux_installer;
+        else if(!strcmp(platform,"macos") && !has_version)
+            script=&gw_macos_installer;
         uint64_t supplied = 0;
         int header=lws_hdr_copy(c->wsi,auth,sizeof(auth),WSI_TOKEN_HTTP_AUTHORIZATION);
         int install_auth=header>8 && !strncmp(auth,"FastP2P ",8) && fastp2p_install_key_valid(auth+8) &&
@@ -1329,22 +1335,25 @@ static void handle_http(struct connection *c) {
             http_error(c, 401, 1, "unauthorized");
             return;
         }
-        if(installer && is_linux){
+        if(installer && script){
             if(!gw_store_package_key_valid(platform,has_version?version:"1")){
                 http_error(c,400,1,"invalid platform or version");return;
             }
-            struct gw_linux_package packages[GW_LINUX_ARCH_COUNT];size_t count=0;
-            if(linux_installer_packages(has_version?version:"",packages,&count)){
+            struct gw_install_package packages[GW_INSTALLER_MAX_ARCHES];size_t count=0;
+            if(installer_packages(script,has_version?version:"",packages,&count)){
                 http_error(c,503,1,"cannot prepare package manifest; retry after synchronization");return;
             }
-            if(!count){http_error(c,404,1,"no supported Linux packages found");return;}
+            if(!count){http_error(c,404,1,"no supported packages found for this platform");return;}
             char generated[700],headers[256];
-            if(gw_linux_installer(g.update_dir,g.public_host,g.ws_port,g.enrollment_ca,packages,count,generated)){
-                http_error(c,503,1,"cannot prepare Linux installer; retry after synchronization");return;
+            if(gw_build_installer(script,g.update_dir,g.public_host,g.ws_port,g.enrollment_ca,packages,count,generated)){
+                http_error(c,503,1,"cannot prepare installer; retry after synchronization");return;
             }
-            snprintf(headers,sizeof(headers),"Content-Disposition: attachment; filename=\"fastp2p-%" PRIu64 "\"\r\nCache-Control: no-store\r\n",g.token);
+            if(script==&gw_macos_installer)
+                snprintf(headers,sizeof(headers),"Content-Disposition: attachment; filename=\"fastp2p-macos-%" PRIu64 ".sh\"\r\nCache-Control: no-store\r\n",g.token);
+            else
+                snprintf(headers,sizeof(headers),"Content-Disposition: attachment; filename=\"fastp2p-%" PRIu64 "\"\r\nCache-Control: no-store\r\n",g.token);
             if(lws_serve_http_file(c->wsi,generated,"application/octet-stream",headers,(int)strlen(headers))<0)
-                http_error(c,503,1,"cannot serve Linux installer");
+                http_error(c,503,1,"cannot serve installer");
             return;
         }
         if(!has_version){http_error(c,400,1,"version is required");return;}
