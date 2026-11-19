@@ -117,6 +117,7 @@ struct gateway {
     /* Per-family vhosts: created only when --bind6 / --apibind6 were given, so a
      * v4-only configuration behaves exactly as before. */
     struct lws_vhost *ws_vhost6, *api_vhost6, *ws_alt_vhost6;
+    struct lws_vhost *ws_client_vhost, *ws_client_vhost6;
     unsigned alt_ws6_port;
     lws_sorted_usec_list_t tick;
     struct connection *nodes[GW_MAX_NODES];
@@ -125,6 +126,7 @@ struct gateway {
     unsigned max_nodes, timeout, ws_port, api_port, run_seconds;
     char bind[64], api_bind[64], bind6[64], api_bind6[64];
     const char *cert, *key, *user, *password;
+    const char *client_tls_host, *client_tls_cert, *client_tls_key;
     char admin_email[257];
     char secret[2048];
     struct gw_admin admin;

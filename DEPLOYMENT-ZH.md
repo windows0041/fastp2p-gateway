@@ -88,6 +88,8 @@ SQLite 位于 `/var/lib/fastp2p/nodes.sqlite3`，schema 2，回滚日志 `DELETE
 
 网关 WSS 为 TCP 27183；TCP NAT 为 27180–27181；UDP NAT 为 27180–27183。Windows SOCKS5 仅监听本机：1080 使用 QUIC，1081 使用 TCP 打洞，出口均为 xrwmaster。
 
+客户端可以通过单独的域名建立 TLS 连接。在网关环境中同时配置 `FASTP2P_CLIENT_TLS_HOST`、`FASTP2P_CLIENT_TLS_CERT` 和 `FASTP2P_CLIENT_TLS_KEY`，主 WSS 端口会根据 SNI 选择证书。`FASTP2P_PUBLIC_HOST` 仍用于控制台生成的接入配置和安装命令。证书续期后重启网关加载更新的证书。
+
 | 验证 | 结果 |
 | --- | --- |
 | Windows SOCKS5 经 QUIC / TCP 打洞 | 两种传输的 256 KiB TCP、1000 字节 UDP、SSH 主机密钥与身份验证、35 秒心跳均通过 |

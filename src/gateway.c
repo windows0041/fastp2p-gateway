@@ -1083,7 +1083,9 @@ static int push_update(struct connection *node, const char *version) {
                     : vhost == g.ws_alt_vhost6            ? g.alt_ws6_port
                                                           : g.ws_port;
     /* An IPv6 literal host needs brackets or the URL authority is ambiguous. */
-    gw_host_url_authority(authority, sizeof(authority), g.public_host);
+    const char *host = vhost == g.ws_client_vhost || vhost == g.ws_client_vhost6
+                           ? g.client_tls_host : g.public_host;
+    gw_host_url_authority(authority, sizeof(authority), host);
     snprintf(url, sizeof(url),
              "https://%s:%u/api/v1/update/download?platform=%s&version=%s&token=%" PRIu64,
              authority, port, platform, version, node->install_token);
@@ -2279,8 +2281,10 @@ static int scope_device(sqlite3_int64 owner, char device[33]) {
 static int login_status(struct lws *wsi, sqlite3_int64 *account, uint64_t *install_token) {
     char uri[256], node[32], token[32];
     uint64_t value;
-    if (lws_get_vhost(wsi) != g.ws_vhost && lws_get_vhost(wsi) != g.ws_alt_vhost &&
-        lws_get_vhost(wsi) != g.ws_vhost6 && lws_get_vhost(wsi) != g.ws_alt_vhost6)
+    struct lws_vhost *vhost = lws_get_vhost(wsi);
+    if (!vhost || (vhost != g.ws_vhost && vhost != g.ws_alt_vhost &&
+                   vhost != g.ws_vhost6 && vhost != g.ws_alt_vhost6 &&
+                   vhost != g.ws_client_vhost && vhost != g.ws_client_vhost6))
         return 404;
     if (lws_hdr_copy(wsi, uri, sizeof(uri), WSI_TOKEN_GET_URI) < 0 ||
         (strcmp(uri, "/api/v1/login") && strcmp(uri, "/fastp2p/v1/login")))
@@ -2689,6 +2693,12 @@ static void tick(lws_sorted_usec_list_t *sul) {
     }
     lws_sul_schedule(g.context, 0, &g.tick, tick, 10000);
 }
+static struct lws_vhost *client_tls_vhost(struct lws_context_creation_info info) {
+    info.vhost_name = g.client_tls_host;
+    info.ssl_cert_filepath = g.client_tls_cert;
+    info.ssl_private_key_filepath = g.client_tls_key;
+    return lws_create_vhost(g.context, &info);
+}
 static void usage(void) {
     puts("fastp2p-gateway --cert FILE --key FILE [--bind IP] [--apibind IP]\n"
          "  [--bind6 IPV6] [--apibind6 IPV6] [--altwss6 PORT]\n"
@@ -2714,6 +2724,9 @@ static int options(int argc, char **argv) {
     g.database = getenv("FASTP2P_DATABASE");
     g.public_host = getenv("FASTP2P_PUBLIC_HOST");
     g.enrollment_ca_file = getenv("FASTP2P_CA_FILE");
+    g.client_tls_host = getenv("FASTP2P_CLIENT_TLS_HOST");
+    g.client_tls_cert = getenv("FASTP2P_CLIENT_TLS_CERT");
+    g.client_tls_key = getenv("FASTP2P_CLIENT_TLS_KEY");
     if (!g.database)
         g.database = "nodes.sqlite3";
     snprintf(g.bind, sizeof(g.bind), "127.0.0.1");
@@ -2863,6 +2876,13 @@ static int options(int argc, char **argv) {
     /* SPEC §7: an IPv6 literal is a legal public host; URLs bracket it later. */
     if (!fastp2p_enrollment_host_valid(g.public_host) && !gw_is_ipv6_literal(g.public_host))
         return -1;
+    if ((g.client_tls_host || g.client_tls_cert || g.client_tls_key) &&
+        (!fastp2p_enrollment_host_valid(g.client_tls_host) ||
+         !strcasecmp(g.client_tls_host, g.public_host) ||
+         !g.client_tls_cert || !*g.client_tls_cert || !g.client_tls_key || !*g.client_tls_key)) {
+        fputs("Set a distinct FASTP2P_CLIENT_TLS_HOST and both client TLS certificate paths\n", stderr);
+        return -1;
+    }
     /* Kept across the call because the global below points at it. */
     static char automatic_ca[4096];
     if (!g.enrollment_ca_file) {
@@ -2989,6 +3009,13 @@ sqlite3_close(g.db);
         fputs("Cannot bind the WSS port\n", stderr);
         goto failed;
     }
+    if (g.client_tls_host) {
+        g.ws_client_vhost = client_tls_vhost(info);
+        if (!g.ws_client_vhost) {
+            fputs("Cannot initialize the client TLS alias\n", stderr);
+            goto failed;
+        }
+    }
     g.ws_alt_vhost = NULL;
     if (g.alt_ws_port) {
         info.iface = g.bind;
@@ -3021,6 +3048,13 @@ sqlite3_close(g.db);
         if (!g.ws_vhost6) {
             fputs("Cannot bind the IPv6 WSS port\n", stderr);
             goto failed;
+        }
+        if (g.client_tls_host) {
+            g.ws_client_vhost6 = client_tls_vhost(info);
+            if (!g.ws_client_vhost6) {
+                fputs("Cannot initialize the IPv6 client TLS alias\n", stderr);
+                goto failed;
+            }
         }
         if (g.alt_ws6_port) {
             info.iface = g.bind6;
