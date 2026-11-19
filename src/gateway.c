@@ -286,6 +286,21 @@ static void report_ipv6(struct connection *c, json_object *j) {
             c->families |= GW_FAMILY_V6;
     }
 }
+/* A probe report can fill the registry's IPv4 display during IPv6 control.
+ * Peer addressing and relay selection still use socket observations. */
+static void report_ipv4(struct connection *c, json_object *j) {
+    json_object *field = gw_get(j, "IPv4");
+    if (c->observed_family == GW_FAMILY_V4 || !json_object_is_type(field, json_type_string))
+        return;
+    struct in_addr address;
+    const char *text = json_object_get_string(field);
+    if ((size_t)json_object_get_string_len(field) != strlen(text) || inet_pton(AF_INET, text, &address) != 1)
+        return;
+    uint32_t value = ntohl(address.s_addr);
+    if (!value || value == UINT32_MAX || (value >> 24) == 127 || IN_MULTICAST(value))
+        return;
+    inet_ntop(AF_INET, &address, c->probed_ipv4, sizeof(c->probed_ipv4));
+}
 static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const unsigned char *data,
                     size_t len) {
     if (main == 1) {
@@ -346,6 +361,7 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
         }
     } else if (main == 6 && sub == 9) {
         if (nat_fields(c, j)) { json_object_put(j); return -1; }
+        report_ipv4(c, j);
         report_ipv6(c, j);
         if (gw_store_save(g.db, c, 1)) {
             json_object_put(j); return -1;
@@ -361,6 +377,7 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
         copy_field(c->hostname, sizeof(c->hostname), j, "hostname");
         c->has_ipv4 = (unsigned)(gw_integer(j, "hasIPv4") != 0);
         c->has_upnp = (unsigned)(gw_integer(j, "hasUPNPorNATPMP") != 0);
+        report_ipv4(c, j);
         /* SPEC §4: the v6 public observation and reachability flag ride on the
          * registration frame too; absent or invalid fields keep the observed
          * values (a legacy free-form "IPv6" string must not break login). */
@@ -737,7 +754,7 @@ static json_object *devices(sqlite3_int64 owner) {
         snprintf(number, sizeof(number), "%" PRIu64, n->id);
         gw_js(j, "id", number);
         gw_js(j, "name", n->node);
-        gw_js(j, "ip", n->ip);
+        gw_js(j, "ip", n->ip[0] ? n->ip : n->probed_ipv4);
         gw_js(j, "ipv6", n->ipv6);
         snprintf(number, sizeof(number), "%u", n->nat);
         gw_js(j, "natType", number);

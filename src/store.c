@@ -333,7 +333,7 @@ int gw_store_save(sqlite3 *db, const struct connection *node, int online) {
     if (sqlite3_prepare_v2(db, text, -1, &statement, NULL) != SQLITE_OK)
         return -1;
     int parameter = 1;
-    sqlite3_bind_text(statement, parameter++, node->ip, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(statement, parameter++, node->ip[0] ? node->ip : node->probed_ipv4, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(statement, parameter++, node->ipv6, -1, SQLITE_TRANSIENT);
     const char *fields[] = {node->lan, node->mac, node->os, node->version, node->hostname};
     for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {

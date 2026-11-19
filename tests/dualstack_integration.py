@@ -183,11 +183,20 @@ try:
         assert live['families'] == 2 and live['udpNatType6'] == 1 and live['ipv6'] == '::1'
         results['v6_only_login_family_and_nat6_reported'] = True
 
+        v6.send(message(6, 9, {'IPv4': '198.51.100.21'}))
+        row = wait(lambda: next((n for n in nodes() if n['name'] == 'v6-only-node'
+                                 and n['ip'] == '198.51.100.21'), None))
+        assert row['ipv6'] == '::1', row
+        live = next(n for n in api('/api/v1/devices', jwt=jwt)[1]['nodes']
+                    if n['name'] == 'v6-only-node')
+        assert live['ip'] == '198.51.100.21', live
+        results['v4_probe_visible_over_v6_control'] = True
+
         # (b) dual-stack node: v4 socket + reported v6 literal + families=3.
         dual = WS('dual-stack-node', family=4,
                   extra='&nattype=1&families=3&ipv6=2001%3Adb8%3A%3A1&tcpnattype=2')
         dual.report({'os': 'linux-c', 'version': '2.0.0', 'hasIPv4': 1, 'hasIPv6': 1,
-                     'IPv6': '2001:db8::1', 'families': 3,
+                     'IPv4': '198.51.100.22', 'IPv6': '2001:db8::1', 'families': 3,
                      'udpNatType': 2, 'tcpNatType': 1, 'tcpNatSamples': 3,
                      'tcpNatDestinationIPs': 3,
                      'udpNatType6': 4, 'tcpNatType6': 2, 'tcpNatSamples6': 5,
@@ -223,7 +232,7 @@ try:
         relogin.send(message(7, 0, {'peerNode': 'v6-only-node'}))
         answer = json.loads(relogin.until(7, 1))
         assert answer['online'] == 1 and answer['families'] == 2
-        assert answer['IPv6'] == '::1' and answer['udpNatType6'] == 1
+        assert answer['IPv4'] == '' and answer['IPv6'] == '::1' and answer['udpNatType6'] == 1
         results['peer_query_returns_v6_and_families'] = True
 
         # (d) relay family hard filter (SPEC §6).
