@@ -112,15 +112,26 @@ disable_service() {
     case "$manager" in
         systemd) systemctl disable "$service.service" ;;
         procd) if [ -x /etc/init.d/fastp2p ]; then /etc/init.d/fastp2p disable; fi ;;
-        openrc) rc-update del fastp2p default ;;
+        openrc) if service_enabled; then rc-update del fastp2p default; fi ;;
     esac
 }
 stop_service() {
     case "$manager" in
         systemd)
             if systemctl cat "$service.service" >/dev/null 2>&1; then systemctl stop "$service.service"; fi ;;
-        procd) if [ -x /etc/init.d/fastp2p ]; then /etc/init.d/fastp2p stop; fi ;;
-        openrc) if [ -f /etc/init.d/fastp2p ]; then rc-service fastp2p stop; fi ;;
+        procd|openrc)
+            if [ "$manager" = procd ]; then
+                [ -x /etc/init.d/fastp2p ] || return 0
+                set -- /etc/init.d/fastp2p
+            else
+                [ -f /etc/init.d/fastp2p ] || return 0
+                set -- rc-service fastp2p
+            fi
+            # Status 3 means inactive. Other states may still have a
+            # registered instance or a pending restart that needs stopping.
+            if service_running >/dev/null 2>&1 || [ "$?" -ne 3 ]; then
+                "$@" stop
+            fi ;;
     esac
 }
 remove_service() {
@@ -134,8 +145,8 @@ remove_service() {
             # A legacy migration override must not redirect the replacement unit.
             rm -f "/etc/systemd/system/$service.service.d/20-remote-upgrade.conf"
             systemctl daemon-reload ;;
-        procd) if [ -x /etc/init.d/fastp2p ]; then /etc/init.d/fastp2p disable; rm -f /etc/init.d/fastp2p; fi ;;
-        openrc) if [ -f /etc/init.d/fastp2p ]; then rc-update del fastp2p default; rm -f /etc/init.d/fastp2p; fi ;;
+        procd) if [ -x /etc/init.d/fastp2p ]; then disable_service; rm -f /etc/init.d/fastp2p; fi ;;
+        openrc) if [ -f /etc/init.d/fastp2p ]; then disable_service; rm -f /etc/init.d/fastp2p; fi ;;
     esac
 }
 write_service() {
