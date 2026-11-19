@@ -141,7 +141,7 @@
       nat.title = 'UDP ' + udpLevel(n) +
         '：NAT1 全锥／NAT2 地址受限／NAT3 端口受限／NAT4 对称。' +
         '（映射观测：' + natDetail(n.udpNatType) +
-        (n.publicIPPort ? '；TCP 业务端口 ' + n.publicIPPort : '') + '）' +
+        (n.publicIPPort ? '；业务端口 ' + n.publicIPPort + (n.publicUDP ? ' / TCP + UDP' : ' / TCP') : '') + '）' +
         'TCP ' + tcpLabel(n) + '：（' +
         (Number(n.tcpNatSamples) || 0) + ' 个样本，' + (Number(n.tcpNatDestinationIPs) || 0) +
         ' 个目标 IP），未做入站过滤探测。' +
@@ -910,7 +910,7 @@
       ['公网 IPv4', node.ip || '—'],
       ['公网 IPv6', node.ipv6 || '—'],
       ['内网 IP', node.lanip || '—'],
-      ['业务端口', node.publicIPPort ? `${node.publicIPPort} / TCP` : '—'],
+      ['业务端口', node.publicIPPort ? `${node.publicIPPort} / ${node.publicUDP ? 'TCP + UDP' : 'TCP'}` : '—'],
       ['NAT 类型', 'UDP：' + udpLevel(node) + ' / TCP：' + tcpLabel(node)],
       ['最近活跃', node.activetime ? String(node.activetime) : '—'],
       ['状态', Number(node.isActive) === 1 ? '在线' : '离线'],

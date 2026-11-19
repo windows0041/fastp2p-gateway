@@ -33,7 +33,8 @@ static int node_columns(sqlite3 *db) {
                                      {"families", 1},
                                      {"nat_level", 0}, {"owner", 1}, {"rename_supported", 0},
                                      {"tcp_level", 0},
-                                     {"public_port", 0}};
+                                     {"public_port", 0},
+                                     {"public_udp", 0}};
     for (unsigned i = 0; i < sizeof(columns) / sizeof(columns[0]); ++i) {
         sqlite3_stmt *s = NULL;
         if (sqlite3_prepare_v2(db, "PRAGMA table_info(nodes)", -1, &s, NULL) != SQLITE_OK) return -1;
@@ -331,6 +332,7 @@ int gw_store_save(sqlite3 *db, const struct connection *node, int online) {
                        "hostname=CASE WHEN ?<>'' THEN ? ELSE hostname END,nat=?,tcp_nat=?,tcp_nat_samples=?,tcp_nat_ips=?,"
                        "nat6=?,tcp_nat6=?,tcp_nat6_samples=?,tcp_nat6_ips=?,families=?,nat_level=?,tcp_level=?,bandwidth=?,last_seen=?,"
                        "online=?,last_offline=CASE WHEN ?=0 THEN ? ELSE last_offline END,rename_supported=?,"
+                       "public_udp=CASE WHEN ?<>0 THEN ? ELSE public_udp END,"
                        "public_port=coalesce(nullif(?,0),public_port) WHERE name=?";
     if (sqlite3_prepare_v2(db, text, -1, &statement, NULL) != SQLITE_OK)
         return -1;
@@ -364,6 +366,8 @@ int gw_store_save(sqlite3 *db, const struct connection *node, int online) {
     sqlite3_bind_int(statement, parameter++, online);
     sqlite3_bind_int64(statement, parameter++, (sqlite3_int64)time(NULL));
     sqlite3_bind_int(statement, parameter++, node->rename_supported);
+    sqlite3_bind_int(statement, parameter++, (int)node->public_port);
+    sqlite3_bind_int(statement, parameter++, (int)node->public_udp);
     sqlite3_bind_int(statement, parameter++, (int)node->public_port);
     sqlite3_bind_text(statement, parameter++, node->node, -1, SQLITE_TRANSIENT);
     int ok = sqlite3_step(statement) == SQLITE_DONE && sqlite3_changes(db) == 1;
@@ -422,7 +426,7 @@ json_object *gw_store_list_for(sqlite3 *db, sqlite3_int64 owner, const char *sea
     uint64_t total = (uint64_t)sqlite3_column_int64(statement, 0);
     sqlite3_finalize(statement);
     statement = NULL;
-    snprintf(query, sizeof(query), "SELECT name,node_id,hostname,ip,ipv6,lanip,mac,os,version,nat,bandwidth,first_seen,last_seen,last_offline,online,tcp_nat,tcp_nat_samples,tcp_nat_ips,nat6,tcp_nat6,tcp_nat6_samples,tcp_nat6_ips,families,nat_level,tcp_level,(rename_supported OR device_id IS NOT NULL),public_port FROM nodes%s ORDER BY online DESC,name LIMIT ?3 OFFSET ?4", where);
+    snprintf(query, sizeof(query), "SELECT name,node_id,hostname,ip,ipv6,lanip,mac,os,version,nat,bandwidth,first_seen,last_seen,last_offline,online,tcp_nat,tcp_nat_samples,tcp_nat_ips,nat6,tcp_nat6,tcp_nat6_samples,tcp_nat6_ips,families,nat_level,tcp_level,(rename_supported OR device_id IS NOT NULL),public_port,public_udp FROM nodes%s ORDER BY online DESC,name LIMIT ?3 OFFSET ?4", where);
     if (sqlite3_prepare_v2(db, query, -1, &statement, NULL) != SQLITE_OK)
         return NULL;
     sqlite3_bind_int64(statement, 1, owner);
@@ -453,6 +457,7 @@ json_object *gw_store_list_for(sqlite3 *db, sqlite3_int64 owner, const char *sea
         gw_ju(node, "tcpNatLevel", (uint64_t)sqlite3_column_int(statement, 24));
         gw_ju(node, "renameSupported", (uint64_t)sqlite3_column_int(statement, 25));
         gw_ju(node, "publicIPPort", (uint64_t)sqlite3_column_int(statement, 26));
+        gw_ju(node, "publicUDP", (uint64_t)sqlite3_column_int(statement, 27));
         {
             int families = sqlite3_column_int(statement, 22);
             gw_ju(node, "families", (uint64_t)(families & (GW_FAMILY_V4 | GW_FAMILY_V6)

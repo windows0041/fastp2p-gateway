@@ -412,6 +412,7 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
             return -1;
         }
         c->public_port = (unsigned)port;
+        c->public_udp = port && gw_integer(j, "publicUDP") == 1;
         c->config_supported = gw_integer(j,"configPush") != 0;
         c->restart_supported = gw_integer(j, "restart") == 1;
         c->major = major_version(c->version);
@@ -757,6 +758,7 @@ static json_object *devices(sqlite3_int64 owner) {
         gw_js(j, "ip", n->ip[0] ? n->ip : n->probed_ipv4);
         gw_js(j, "ipv6", n->ipv6);
         gw_ju(j, "publicIPPort", n->public_port);
+        gw_ju(j, "publicUDP", n->public_udp);
         snprintf(number, sizeof(number), "%u", n->nat);
         gw_js(j, "natType", number);
         gw_ju(j, "udpNatType", n->nat);
