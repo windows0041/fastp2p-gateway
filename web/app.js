@@ -1,20 +1,16 @@
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
-  const state = {token: '', installToken: '', user: '', installPlatform: 'windows',
+  const state = {token: '', installToken: '', user: '', email: '', admin: false, installPlatform: 'windows',
     nodes: [], selected: null, apps: [], updates: [],
     refreshing: false, loadingApps: false, selection: 0, editing: null, confirm: null,
     offset: 0, total: 0, registered: 0, upgrades: new Map(), skippedUpgrades: []};
   /* The console keeps its session in sessionStorage: it survives a reload, but
    * it dies with the tab and is never shared with another tab. */
   const STORE = 'fastp2p.console';
-  /* UDP NAT level, as measured: the mapping test says cone or symmetric, then two
-   * filtering probes (an answer from another gateway port, and one from another
-   * node's address) separate full cone / address-restricted / port-restricted.
-   * 5 means the mapping is cone-shaped but no second node was available to test
-   * the foreign-source case, so NAT1 and NAT2 cannot be told apart yet. */
+  /* Level 5 records a cone-shaped mapping with unmeasured filtering. */
   const udpLevel = node =>
-    ({1: 'NAT1', 2: 'NAT2', 3: 'NAT3', 4: 'NAT4', 5: 'NAT1/2', 6: '无 NAT', 7: '对称防火墙'}[Number(node.natLevel)] || '未知');
+    ({1: 'NAT1', 2: 'NAT2', 3: 'NAT3', 4: 'NAT4', 5: '锥形待判定', 6: '无 NAT', 7: '对称防火墙'}[Number(node.natLevel)] || '未知');
   /* TCP is shown as a mapping observation, never as a NAT level. The probe
    * measures whether the mapping depends on the destination and does not test
    * inbound filtering, so a stable mapping is not full cone: a measured node kept
@@ -51,15 +47,24 @@
     text('rule-message', value); $('rule-message').hidden = !value;
     $('rule-message').classList.toggle('error', error);
   }
+  function renderAccount(account) {
+    state.user = account.user || '';
+    state.email = account.email || '';
+    state.admin = account.admin === true;
+    $('sync-release').hidden = $('upload-update').hidden = !state.admin;
+    $('sync-message').hidden = !state.admin;
+    renderMinePage();
+  }
   function logout(expired = false) {
-    state.token = state.installToken = state.user = '';
+    state.token = state.installToken = '';
+    renderAccount({});
     state.nodes = []; state.apps = []; state.updates = []; state.selected = null;
     state.upgrades.clear(); state.skippedUpgrades = []; renderUpgradeProgress();
     persist();
     state.selection++; $('console').hidden = true; $('login-screen').hidden = false;
     state.offset = state.total = state.registered = 0; $('node-search').value = '';
     $('install-token').value = ''; $('password').value = ''; $('nodes').replaceChildren(); $('rules').replaceChildren();
-    text('mine-account', ''); text('mine-token', '');
+    $('install-commands').replaceChildren(); delete $('install-commands').dataset.package;
     for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
     $('login-error').hidden = !expired;
     if (expired) text('login-error', '会话已过期，请重新登录。');
@@ -81,13 +86,20 @@
         throw new Error(token ? '会话已过期，请重新登录。' : '账号或密码不正确。');
       }
       if (!response.ok || body.error) {
-        const known = {409: '此节点正在处理另一个查询，请稍后刷新。', 503: '节点暂时无法响应，请稍后重试。',
+        const known = {409: '此节点正在处理另一个查询，请稍后刷新。', 429: '尝试次数过多，请稍后再试。', 503: '节点暂时无法响应，请稍后重试。',
           504: '客户端响应超时，请检查节点是否仍在线。', 501: '此客户端暂不支持该操作。'};
         const details = {'device offline':'节点已离线。','node is online':'节点已上线，不能删除。',
         'client restart unsupported':'此客户端暂不支持远程重启，请先更新客户端。',
           'node not found':'节点记录已不存在。','current password incorrect':'当前密码不正确。',
           'no package for this platform and version':'没有适合此节点平台和架构的安装包，请先手动安装新版客户端。',
-          'invalid account settings':'请填写有效账号和至少 8 位的新密码。'};
+          'invalid account settings':'请填写有效账号和至少 8 位的新密码。',
+          'invalid email or password':'请输入有效邮箱和至少 8 位的密码。', 'email already registered':'此邮箱已注册，请登录。',
+          'invalid node name':'设备名须为 8–31 个字母、数字、下划线或连字符。',
+          'node name already in use':'此设备名已被占用，请换一个名字。',
+          'client rename unsupported':'请先升级客户端并让设备重新连接。',
+          'package not found':'安装包已更新，请刷新后重试。',
+          'no supported packages found for this platform':'暂无该平台的安装包。',
+          'installation link unavailable':'暂时无法生成安装命令，请稍后重试。'};
         throw new Error(details[body.detail] || known[response.status] || '网关未能完成请求。');
       }
       return body;
@@ -132,7 +144,7 @@
         'TCP ' + tcpLabel(n) + '：（' +
         (Number(n.tcpNatSamples) || 0) + ' 个样本，' + (Number(n.tcpNatDestinationIPs) || 0) +
         ' 个目标 IP），未做入站过滤探测。' +
-        (Number(n.natLevel) === 5 ? ' NAT1/2 表示映射为锥形，但当时没有第二个节点可用于区分是否接受陌生来源。' : '');
+        (Number(n.natLevel) === 5 ? ' UDP 已测出锥形映射，入站过滤仍待判定。' : '');
       row.append(nat, element('td', 'mono', n.version || '—'));
       const active = Number(n.isActive) === 1;
       const status = element('td'); status.append(element('span', 'badge ' + (active ? 'online' : 'offline'), active ? '● 在线' : '○ 离线')); row.append(status);
@@ -219,8 +231,9 @@
       text('uptime', uptime(status.uptimeSeconds)); text('queue', bytes(status.queuedBytes));
       text('queue-limit', '上限 ' + bytes(status.queueLimitBytes)); text('version', status.version);
       text('sidebar-version', 'C Gateway ' + status.version); text('wss-port', 'WSS :' + status.wssPort + ' · HTTPS');
-      state.user = status.user;
-      renderMinePage();
+      const wasAdmin = state.admin;
+      renderAccount(status);
+      if (state.admin && !wasAdmin) syncRelease();
       text('updated-at', '更新于 ' + new Date().toLocaleTimeString('zh-CN', {hour12: false}));
       renderNodes();
       const device = deviceRoute();
@@ -418,7 +431,7 @@
   async function syncRelease(start = false) {
     const token = state.token;
     clearTimeout(syncTimer);
-    if (!token) return;
+    if (!token || !state.admin) return;
     $('sync-release').disabled = true;
     try {
       const result = await api('/api/v1/releases/sync', start ? {} : undefined);
@@ -516,24 +529,41 @@
     $('rule-dialog').showModal();
   }
   $('rule-protocol').addEventListener('change', syncRuleFields);
+  let registering = false;
+  function authMode(signup) {
+    registering = signup;
+    text('login-title', signup ? '注册账号' : '登录控制台');
+    text('login-description', signup ? '填写邮箱和密码即可注册。' : '使用邮箱和密码登录。');
+    text('login-user-label', signup ? '邮箱' : '邮箱或已有账号');
+    $('username').type = signup ? 'email' : 'text';
+    $('password').minLength = signup ? 8 : 0;
+    $('password').autocomplete = signup ? 'new-password' : 'current-password';
+    $('password').value = '';
+    $('login-error').hidden = true;
+    text('login-submit', signup ? '注册并登录' : '登录控制台');
+    text('register-toggle', signup ? '返回登录' : '注册账号');
+  }
+  $('register-toggle').addEventListener('click', () => authMode(!registering));
   $('login-form').addEventListener('submit', async event => {
-    event.preventDefault(); $('login-submit').disabled = true; $('login-error').hidden = true;
+    event.preventDefault(); $('login-submit').disabled = $('register-toggle').disabled = true; $('login-error').hidden = true;
     try {
-      const login = await api('/api/v1/user/login', {user: $('username').value, password: $('password').value});
+      const login = await api('/api/v1/user/' + (registering ? 'register' : 'login'), {
+        [registering ? 'email' : 'user']: $('username').value.trim(), password: $('password').value});
       if (typeof login.token !== 'string' || typeof login.installToken !== 'string') throw new Error('无法读取登录凭据。');
       state.token = login.token; state.installToken = login.installToken;
-      state.user = $('username').value; $('password').value = '';
+      renderAccount(login); authMode(false);
       persist();
       $('login-screen').hidden = true; $('console').hidden = false;
       route();
       await refresh();
       syncRelease();
     } catch (error) { text('login-error', error.message); $('login-error').hidden = false; }
-    finally { $('login-submit').disabled = false; }
+    finally { $('login-submit').disabled = $('register-toggle').disabled = false; }
   });
   $('mine-account-edit').addEventListener('click', () => {
     $('account-form').reset(); $('account-error').hidden = true;
     $('account-user').value = state.user;
+    $('account-user').readOnly = !state.admin;
     $('account-dialog').showModal();
   });
   $('account-form').addEventListener('submit', async event => {
@@ -661,21 +691,93 @@
       text('reveal-token', '隐藏'); text('copy-token', '请手动复制');
     }
   });
+  function installCommand(platform, url) {
+    if (!/^https:\/\/(?:[A-Za-z0-9_.-]+|\[[0-9A-Fa-f:.]+\]):\d+\/api\/v1\/install\/bootstrap\?ticket=[a-f0-9]{48}$/.test(url))
+      throw new Error('网关返回的安装链接无效。');
+    if (platform === 'windows') return [
+      "$d = Join-Path ([IO.Path]::GetTempPath()) ('fastp2p-' + [guid]::NewGuid()); New-Item -ItemType Directory -Path $d -ErrorAction Stop | Out-Null; Push-Location -LiteralPath $d;",
+      `try { curl.exe -fsS -OJ --proto '=https' '${url}'; if ($LASTEXITCODE) { throw 'FastP2P download failed' };`,
+      "$exe = @(Get-ChildItem -LiteralPath $d -File -Filter 'fastp2p-*.exe'); if ($exe.Count -ne 1) { throw 'FastP2P installer missing' };",
+      "if ((Start-Process -FilePath $exe[0].FullName -Verb RunAs -Wait -PassThru).ExitCode) { throw 'FastP2P installation failed' }",
+      '} finally { Pop-Location; Get-ChildItem -LiteralPath $d -File | Remove-Item -Force; Remove-Item -LiteralPath $d }'
+    ].join(' ');
+    const run = platform === 'android'
+      ? 'key=${1##*-}; key=${key%.apk}; adb install -r "$1" && adb shell am start -a android.intent.action.VIEW -d "fastp2p://install?token=$key" -p top.fastp2p.cclient'
+      : 'sh "$1"';
+    return [
+      "(set -eu; umask 077; d=$(mktemp -d); trap 'rm -rf -- \"$d\"' 0; cd \"$d\";",
+      `if command -v curl >/dev/null 2>&1; then curl -fsS -OJ --proto '=https' '${url}'; else wget -q --content-disposition '${url}'; fi;`,
+      `set -- ./fastp2p-*; test "$#" -eq 1; test -f "$1"; ${run})`
+    ].join(' ');
+  }
+  function renderInstallCommand(platform, wanted) {
+    if ($('view-install').hidden) return;
+    const section = $('install-commands');
+    const latest = wanted.reduce((best, item) => !best || compareVersions(item.version || '0', best.version || '0') > 0 ? item : best, null);
+    const version = latest?.automatic ? '' : latest?.version;
+    const selection = `${platform}/${version ?? '-'}`;
+    if (section.dataset.package === selection) return;
+    section.dataset.package = selection;
+    if (!latest) {
+      section.replaceChildren(element('p', 'muted', '暂无该平台的安装包。'));
+      return;
+    }
+    const label = element('label', '', '安装命令');
+    label.htmlFor = 'install-command';
+    const command = element('textarea', 'mono');
+    command.id = 'install-command'; command.rows = 4; command.readOnly = true;
+    command.spellcheck = false;
+    const copy = element('button', 'button primary', '复制命令');
+    const renew = element('button', 'link-button', '生成新命令');
+    copy.type = renew.type = 'button';
+    const row = element('div', 'install-command'); row.append(command, copy);
+    const status = element('p', 'muted'); status.setAttribute('role', 'status');
+    const actions = element('div', 'install-command-actions'); actions.append(renew, status);
+    section.replaceChildren(label, row, actions);
+    if (platform === 'android') {
+      const open = element('a', 'link-button', '已安装 APK，在手机上打开 FastP2P 并接入');
+      open.href = 'fastp2p://install?token=' + encodeURIComponent(state.installToken);
+      section.append(open);
+    }
+    let expiresAt = 0;
+    async function generate() {
+      command.value = ''; copy.disabled = renew.disabled = true; status.textContent = '正在生成安装命令…';
+      try {
+        const link = await api('/api/v1/install/link', {platform, version});
+        if (!command.isConnected) return;
+        command.value = installCommand(platform, link.url);
+        expiresAt = Date.now() + link.expiresIn * 1000;
+        copy.disabled = false;
+        copy.textContent = '复制命令';
+        status.textContent = '命令 10 分钟内有效，下载一次后失效。';
+      } catch (error) { status.textContent = error.message; }
+      finally { renew.disabled = false; }
+    }
+    copy.addEventListener('click', async () => {
+      if (Date.now() >= expiresAt) await generate();
+      if (!command.value) return;
+      try { await navigator.clipboard.writeText(command.value); copy.textContent = '已复制'; }
+      catch { command.focus(); command.select(); copy.textContent = '请手动复制'; }
+    });
+    renew.addEventListener('click', generate);
+    generate();
+  }
   function renderInstall() {
     const list = $('install-list');
     const platform = state.installPlatform;
     const notes = {
-      windows: 'Windows 首次运行若被 SmartScreen 拦截，请点「更多信息 → 仍要运行」；安装时需要上面的 16 位数字 Token。',
-      macos: '支持 macOS 13 及以上。保留下载文件名，在终端输入 sh 和脚本所在路径执行。脚本自动识别 Apple Silicon 或 Intel，当前用户登录后启动，无需 sudo。',
-      linux: '保留下载文件名，在终端用 sudo sh 加脚本路径执行。脚本自动识别架构，并设置服务开机启动。',
-      android: '安装 APK 后打开客户端，输入上面的 16 位数字 Token。'
+      windows: '在 PowerShell 中运行，按提示确认管理员权限。',
+      macos: '在 macOS 13 或更新版本的终端中，用当前登录用户运行。',
+      linux: '在 Linux 终端中运行，按提示使用 sudo。脚本会识别 CPU 架构并安装服务。',
+      android: '连接已启用 USB 调试的手机，在电脑上有 adb 的 shell 中运行。也可在手机上手动下载 APK 并确认安装。'
     };
     text('install-note', notes[platform]);
     const wanted = availableDownloads().filter(update =>
       update.platform === platform || update.platform.startsWith(platform + '-'));
+    renderInstallCommand(platform, wanted);
     if (!wanted.length) {
       list.replaceChildren(element('p', 'muted install-empty',
-        '暂无该平台的安装包，请先在「客户端升级」里同步或上传。'));
+        '暂无该平台的安装包。'));
       return;
     }
     list.replaceChildren(...wanted.map(update => {
@@ -725,8 +827,9 @@
     renderInstall();
   }
   function renderMinePage() {
-    text('mine-account', state.user || '—');
+    text('mine-account', state.email || state.user || '—');
     text('mine-token', state.installToken || '—');
+    text('mine-account-edit', state.admin ? '修改账号与密码' : '修改密码');
   }
   function goToDevice(name) {
     const target = '#/device/' + encodeURIComponent(name);
@@ -809,11 +912,40 @@
     ];
     fields.replaceChildren(...rows.map(([label, value]) => {
       const row = element('div', 'device-field');
-      row.append(element('span', 'device-field-label', label),
-                 element('span', 'device-field-value mono', String(value)));
+      const field = element('span', 'device-field-value mono', String(value));
+      if (label === '设备名字') {
+        const rename = element('button', 'link-button device-rename', '改名');
+        rename.type = 'button'; rename.disabled = !node.capabilities?.rename;
+        if (rename.disabled) rename.title = '请先升级客户端并让设备重新连接';
+        rename.addEventListener('click', () => openRename(node.name));
+        field.append(rename);
+      }
+      row.append(element('span', 'device-field-label', label), field);
       return row;
     }));
   }
+  let renameFrom = '';
+  function openRename(name) {
+    renameFrom = name;
+    $('new-device-name').value = name;
+    $('rename-error').hidden = true;
+    $('rename-dialog').showModal();
+    $('new-device-name').select();
+  }
+  $('cancel-rename').addEventListener('click', () => $('rename-dialog').close());
+  $('rename-form').addEventListener('submit', async event => {
+    event.preventDefault(); $('save-rename').disabled = true; $('rename-error').hidden = true;
+    const token = state.token, previous = renameFrom;
+    try {
+      const result = await api('/api/v1/device/' + encodeURIComponent(previous) + '/rename', {name: $('new-device-name').value});
+      if (state.token !== token) return;
+      $('rename-dialog').close();
+      state.nodes = state.nodes.filter(node => node.name !== previous);
+      goToDevice(result.name);
+      await refresh();
+    } catch (error) { text('rename-error', error.message); $('rename-error').hidden = false; }
+    finally { $('save-rename').disabled = false; }
+  });
   window.addEventListener('hashchange', route);
   $('device-back-inline').addEventListener('click', () => { location.hash = '#/devices'; });
   $('side-logout').addEventListener('click', () => logout()); $('refresh').addEventListener('click', refresh);

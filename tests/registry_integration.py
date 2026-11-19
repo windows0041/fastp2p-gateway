@@ -100,20 +100,32 @@ with tempfile.TemporaryDirectory(prefix='fastp2p-registry-') as temporary:
                 while data:=self.request.recv(65536):self.request.sendall(data)
         echo=socketserver.ThreadingTCPServer(('127.0.0.1',0),Echo);echo.daemon_threads=True
         threading.Thread(target=echo.serve_forever,daemon=True).start()
+        def transfer(port):
+            with socket.create_connection(('127.0.0.1',port),timeout=2) as stream:
+                stream.settimeout(5);payload=secrets.token_bytes(16384);stream.sendall(payload);data=bytearray()
+                while len(data)<len(payload):
+                    part=stream.recv(len(payload)-len(data))
+                    if not part:return False
+                    data.extend(part)
+                return data==payload
+        ports=[]
         for transport,priority in [('tcp',3),('quic',1)]:
             with socket.socket() as free:free.bind(('127.0.0.1',0));port=free.getsockname()[1]
             reply=api('/api/v1/device/'+names[0]+'/app',{'appName':'auto-'+transport,'protocol':'tcp','srcPort':port,
                       'peerNode':names[1],'dstHost':'127.0.0.1','dstPort':echo.server_address[1],'punchPriority':priority})
             assert reply['error']==0
-            def transfer():
-                with socket.create_connection(('127.0.0.1',port),timeout=2) as stream:
-                    stream.settimeout(5);payload=secrets.token_bytes(16384);stream.sendall(payload);data=bytearray()
-                    while len(data)<len(payload):
-                        part=stream.recv(len(payload)-len(data))
-                        if not part:return False
-                        data.extend(part)
-                    return data==payload
-            wait(transfer,45);result['canonical_name_'+transport+'_forwarding']=True
+            wait(lambda: transfer(port),45);result['canonical_name_'+transport+'_forwarding']=True
+            ports.append(port)
+        new_names=['renamed-source','renamed-target']
+        before=mapping()
+        for previous,name in zip(names,new_names):
+            assert api('/api/v1/device/'+previous+'/rename',{'name':name})['name']==name
+            wait(lambda: any(n['name']==name for n in api('/api/v1/devices')['nodes']))
+        after=mapping()
+        assert after=={device:dict(zip(names,new_names)).get(name,name) for device,name in before.items()}
+        for port in ports:
+            wait(lambda: transfer(port),45)
+        result['automatic_nodes_keep_identity_and_tcp_quic_forwarding_after_rename']=True
         stop(three);stop(four)
         process.terminate();assert process.wait(timeout=10)==0
         result['success']=True

@@ -111,6 +111,25 @@ char *gw_jwt_issue(const char *user, uint64_t token, const char *secret, uint64_
     free(sig);
     return result;
 }
+int gw_jwt_user(const char *text, char user[257]) {
+    if (!text || strlen(text) > 8192)
+        return -1;
+    if (!strncmp(text, "Bearer ", 7))
+        text += 7;
+    const char *dot = strchr(text, '.'), *last = dot ? strchr(dot + 1, '.') : NULL;
+    if (!dot || !last || strlen(last + 1) != 43)
+        return -1;
+    json_object *claims = unb64_json(dot + 1, (size_t)(last - dot - 1));
+    json_object *field = gw_get(claims, "user");
+    const char *value = gw_string(claims, "user");
+    size_t length = strlen(value);
+    int valid = length > 0 && length <= 256 && length == (size_t)json_object_get_string_len(field);
+    if (valid)
+        memcpy(user, value, length + 1);
+    if (claims)
+        json_object_put(claims);
+    return valid ? 0 : -1;
+}
 int gw_jwt_verify(const char *text, const char *user, uint64_t token, const char *secret,
                   uint64_t now) {
     if (!text || strlen(text) > 8192)

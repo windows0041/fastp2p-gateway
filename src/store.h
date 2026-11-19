@@ -9,6 +9,16 @@ struct gw_admin {
     unsigned char salt[16], hash[32];
     unsigned iterations;
 };
+struct gw_member {
+    struct gw_admin account;
+    sqlite3_int64 id;
+    uint64_t token;
+};
+int gw_email_normalize(const char *input, char email[257]);
+int gw_store_member_read(sqlite3 *db, const char *email, struct gw_member *member);
+sqlite3_int64 gw_store_member_owner(sqlite3 *db, uint64_t token);
+int gw_store_member_create(sqlite3 *db, const struct gw_admin *account, uint64_t admin_token);
+int gw_store_member_password(sqlite3 *db, sqlite3_int64 owner, const struct gw_admin *account);
 int gw_admin_make(struct gw_admin *admin, const char *user, const char *password);
 int gw_admin_verify(const struct gw_admin *admin, const char *password);
 int gw_store_admin_read(sqlite3 *db, struct gw_admin *admin);
@@ -19,12 +29,24 @@ int gw_store_open(sqlite3 **db, const char *path);
 /* 0 = claimed; 1 = conflicting explicit name; -1 = storage failure. */
 int gw_store_claim(sqlite3 *db, const char *requested, const char *hostname,
                    const char *device, int automatic, char assigned[32]);
+int gw_store_claim_for(sqlite3 *db, sqlite3_int64 owner, const char *requested,
+                       const char *hostname, const char *device, int automatic, char assigned[32]);
 int gw_store_save(sqlite3 *db, const struct connection *node, int online);
 int gw_store_count(sqlite3 *db, uint64_t *count);
+int gw_store_count_for(sqlite3 *db, sqlite3_int64 owner, uint64_t *count);
+json_object *gw_store_list_for(sqlite3 *db, sqlite3_int64 owner, const char *search,
+                               unsigned limit, unsigned offset, int exact);
 json_object *gw_store_list(sqlite3 *db, const char *search, unsigned limit, unsigned offset);
 json_object *gw_store_list_exact(sqlite3 *db, const char *name);
 int gw_device_valid(const char *device);
 int gw_store_manual_status(sqlite3 *db, const char *name);
+int gw_store_manual_status_for(sqlite3 *db, sqlite3_int64 owner, const char *name);
+sqlite3_int64 gw_store_node_owner(sqlite3 *db, const char *name);
+int gw_store_alias_reserved(sqlite3 *db, const char *name);
+int gw_store_alias_for(sqlite3 *db, sqlite3_int64 owner, const char *alias, char canonical[32]);
+/* 0 renamed, 1 name in use, 2 absent or owned by someone else,
+ * 3 client does not support relogin under a new name, -1 storage failure. */
+int gw_store_rename(sqlite3 *db, sqlite3_int64 owner, const char *old_name, const char *new_name);
 int gw_store_resolve(sqlite3 *db, const char *device, char name[32]);
 
 /* Persistent per-node forwarding / SOCKS5 rules. The payload is the complete

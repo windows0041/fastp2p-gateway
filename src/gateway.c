@@ -1,6 +1,7 @@
 #include "gateway.h"
 #include "web_assets.h"
 #include "enrollment.h"
+#include <openssl/rand.h>
 #include "installer.h"
 #include <arpa/inet.h>
 #include <errno.h>
@@ -23,18 +24,43 @@
 
 static struct gateway g;
 static volatile sig_atomic_t stopping;
+static struct install_ticket {
+    char key[49], platform[8], version[32];
+    uint64_t token, expires;
+} install_tickets[256];
 static pid_t release_sync_pid;
 static pid_t release_cleanup_pid;
 static time_t release_cleanup_at;
 static int start_release_worker(int cleanup_only);
 static void upload_unlock(struct connection *c);
 static int send_json(struct connection *,uint16_t,uint16_t,json_object *);
+static int http_authorized(const struct connection *c);
 static int push_config(struct connection *node) {
     if(!node||!node->config_supported)return 0;
     json_object *config=gw_store_config(g.db,node->node);
     if(!config)return -1;
     int result=gw_integer(config,"revision")?send_json(node,3,19,config):0;
     json_object_put(config);return result;
+}
+static int sync_node_rules(struct connection *node) {
+    if (node->config_supported)
+        return gw_store_config_rules(g.db, node->node) || push_config(node);
+    if (!gw_store_rule_managed(g.db, node->node))
+        return 0;
+    json_object *stored = gw_store_rules(g.db, node->node);
+    if (!stored)
+        return -1;
+    json_object *sync = json_object_new_object(), *rules = json_object_new_array();
+    for (size_t i = 0; i < json_object_array_length(stored); ++i) {
+        json_object *entry = json_object_array_get_idx(stored, i), *rule = gw_get(entry, "rule");
+        if (gw_integer(entry, "enabled") && rule)
+            json_object_array_add(rules, json_object_get(rule));
+    }
+    json_object_object_add(sync, "Rules", rules);
+    int result = send_json(node, 3, 16, sync);
+    json_object_put(sync);
+    json_object_put(stored);
+    return result;
 }
 static const char *release_sync_status = "idle";
 static void signal_stop(int signal) {
@@ -54,6 +80,9 @@ static struct connection *find_node(uint64_t id) {
         if (g.nodes[i] && g.nodes[i]->id == id && !g.nodes[i]->closing)
             return g.nodes[i];
     return NULL;
+}
+static sqlite3_int64 install_owner(uint64_t token) {
+    return token == g.token ? GW_ADMIN_OWNER : gw_store_member_owner(g.db, token);
 }
 static void close_node(struct connection *c) {
     if (!c || c->closing)
@@ -279,7 +308,7 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
             return 0;
         }
         struct connection *target = find_node(to);
-        if (!target) {
+        if (!target || target->owner != c->owner) {
             send_push_result(c, 1, "peer offline");
             return 0;
         }
@@ -379,34 +408,14 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
         /* Restore persisted rules on (re)connection, but only for nodes the
          * console has taken ownership of. A node that has never had a stored
          * rule keeps whatever its local config file defines. */
-        if(c->config_supported) {
-            if(gw_store_config_rules(g.db,c->node)||push_config(c)) {
-                json_object_put(j);return -1;
-            }
-        }
-        json_object *stored = !c->config_supported && gw_store_rule_managed(g.db, c->node)
-                                  ? gw_store_rules(g.db, c->node) : NULL;
-        if (stored) {
-            json_object *sync = json_object_new_object(), *rules = json_object_new_array();
-            for (size_t i = 0; i < json_object_array_length(stored); ++i) {
-                json_object *entry = json_object_array_get_idx(stored, i);
-                if (!gw_integer(entry, "enabled"))
-                    continue;
-                json_object *rule = gw_get(entry, "rule");
-                if (rule) {
-                    json_object_get(rule);
-                    json_object_array_add(rules, rule);
-                }
-            }
-            json_object_object_add(sync, "Rules", rules);
-            send_json(c, 3, 16, sync); /* RULE_SYNC */
-            json_object_put(sync);
-            json_object_put(stored);
+        if (sync_node_rules(c)) {
+            json_object_put(j);
+            return -1;
         }
         json_object *online = json_object_new_object();
         gw_js(online, "node", c->node);
         for (unsigned i = 0; i < g.max_nodes; ++i)
-            if (g.nodes[i])
+            if (g.nodes[i] && g.nodes[i]->owner == c->owner)
                 send_json(g.nodes[i], 3, 15, online);
         json_object_put(online);
     } else if (main == 6 && sub == 8) {
@@ -421,8 +430,10 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
     } else if (main == 7 && sub == 0) {
         json_object *response = json_object_new_object();
         const char *name = gw_string(j, "peerNode");
-        struct connection *target = gw_node_valid(name) ? find_node(gw_node_id(name)) : NULL;
-        if (target) {
+        char canonical[32];
+        int alias = gw_node_valid(name) && gw_store_alias_for(g.db, c->owner, name, canonical) == 1;
+        struct connection *target = gw_node_valid(name) ? find_node(gw_node_id(alias ? canonical : name)) : NULL;
+        if (target && target->owner == c->owner) {
             grant(c, target);
             gw_ju(response, "online", 1);
             gw_js(response, "peerNode", target->node);
@@ -446,6 +457,10 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
             gw_ju(response, "tcpNatDestinationIPs6", target->tcp_nat6_ips);
         } else
             gw_ju(response, "online", 0);
+        if (alias) {
+            gw_js(response, "peerNode", name);
+            gw_js(response, "canonicalNode", canonical);
+        }
         send_json(c, 7, 1, response);
         json_object_put(response);
     } else if (main == 5 && sub == 0) {
@@ -454,6 +469,8 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
          * recently, so no single node carries every relayed session. */
         const char *name = gw_string(j, "peerNode");
         struct connection *peer = gw_node_valid(name) ? find_node(gw_node_id(name)) : NULL;
+        if (peer && peer->owner != c->owner)
+            peer = NULL;
         int tcp_relay = !strcmp(gw_string(j, "underlayProtocol"), "tcp");
         json_object *exclude = gw_get(j, "exclude");
         struct connection *relay = NULL;
@@ -479,7 +496,7 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
                  skip_exclude = 0, skip_family = 0;
         for (unsigned i = 0; i < g.max_nodes; ++i) {
             struct connection *n = g.nodes[i];
-            if (!n || n->closing)
+            if (!n || n->closing || n->owner != c->owner)
                 continue;
             ++seen;
             if (n->slot == c->slot) {
@@ -704,14 +721,16 @@ static void capabilities(json_object *node) {
     struct connection *live=find_node(gw_node_id(gw_string(node,"name")));
     json_object_object_add(caps,"configPush",json_object_new_boolean(live&&live->config_supported));
     json_object_object_add(caps, "restart", json_object_new_boolean(live && live->restart_supported));
+    json_object_object_add(caps, "rename", json_object_new_boolean(
+        gw_integer(node, "renameSupported") || (live && live->rename_supported)));
     json_object_object_add(node, "capabilities", caps);
 }
-static json_object *devices(void) {
+static json_object *devices(sqlite3_int64 owner) {
     json_object *root = json_object_new_object(), *nodes = json_object_new_array();
     json_object_object_add(root, "nodes", nodes);
     for (unsigned i = 0; i < g.max_nodes; ++i) {
         struct connection *n = g.nodes[i];
-        if (!n || n->closing)
+        if (!n || n->closing || n->owner != owner)
             continue;
         json_object *j = json_object_new_object();
         char number[32], date[64];
@@ -758,7 +777,7 @@ static json_object *devices(void) {
  * must be rejected before the expensive password hash runs. The table is small
  * and bounded: a busy public gateway cannot be made to allocate without limit.
  * The key covers both families: an IPv6 source must not bypass the limiter. */
-static struct login_attempt *login_slot(unsigned family, const unsigned char *address) {
+static struct login_attempt *login_slot(enum sign_in_scope scope, unsigned family, const unsigned char *address) {
     /* Mix the address so sequential sources do not all land in one slot. */
     uint32_t hash = family;
     for (unsigned i = 0; i < 16; i += 4) {
@@ -769,17 +788,17 @@ static struct login_attempt *login_slot(unsigned family, const unsigned char *ad
     hash ^= hash >> 16;
     unsigned index = hash % GW_LOGIN_SLOTS;
     for (unsigned i = 0; i < GW_LOGIN_SLOTS; ++i) {
-        struct login_attempt *entry = &g.logins[(index + i) % GW_LOGIN_SLOTS];
+        struct login_attempt *entry = &g.logins[scope][(index + i) % GW_LOGIN_SLOTS];
         if (entry->family == family && !memcmp(entry->address, address, 16))
             return entry;
         if (!entry->family)
             return entry;
     }
     /* All slots are taken: evict the oldest window. */
-    struct login_attempt *oldest = &g.logins[index];
+    struct login_attempt *oldest = &g.logins[scope][index];
     for (unsigned i = 1; i < GW_LOGIN_SLOTS; ++i)
-        if (g.logins[i].window_start < oldest->window_start)
-            oldest = &g.logins[i];
+        if (g.logins[scope][i].window_start < oldest->window_start)
+            oldest = &g.logins[scope][i];
     return oldest;
 }
 static void login_key(unsigned family, const struct sockaddr_storage *peer, unsigned char *out) {
@@ -791,7 +810,7 @@ static void login_key(unsigned family, const struct sockaddr_storage *peer, unsi
 }
 /* 0 = continue, 1 = limited. *family is 0 when no usable source address exists,
  * in which case credentials alone gate the request, exactly as before. */
-static int login_limited(struct connection *c, unsigned *family, unsigned char *address) {
+static int login_limited(struct connection *c, enum sign_in_scope scope, unsigned *family, unsigned char *address) {
     struct sockaddr_storage peer;
     socklen_t length = sizeof(peer);
     *family = 0;
@@ -817,7 +836,7 @@ static int login_limited(struct connection *c, unsigned *family, unsigned char *
     *family = (unsigned)peer.ss_family;
     login_key(*family, &peer, address);
     uint64_t now = gw_mono_ms();
-    struct login_attempt *entry = login_slot(*family, address);
+    struct login_attempt *entry = login_slot(scope, *family, address);
     if (entry->family != *family || memcmp(entry->address, address, 16)) {
         memset(entry, 0, sizeof(*entry));
         entry->family = *family;
@@ -838,14 +857,15 @@ static int login_limited(struct connection *c, unsigned *family, unsigned char *
     ++entry->attempts;
     return 0;
 }
-static void login_result(unsigned family, const unsigned char *address, int success) {
+static void login_result(enum sign_in_scope scope, unsigned family, const unsigned char *address, int success) {
     if (!family)
         return;
-    struct login_attempt *entry = login_slot(family, address);
+    struct login_attempt *entry = login_slot(scope, family, address);
     if (entry->family != family || memcmp(entry->address, address, 16))
         return;
     if (success) {
-        memset(entry, 0, sizeof(*entry));
+        if (scope == GW_SIGN_IN_ADMIN)
+            memset(entry, 0, sizeof(*entry));
         return;
     }
     if (++entry->failures >= GW_LOGIN_FAIL_LOCK)
@@ -1046,7 +1066,7 @@ static int push_update(struct connection *node, const char *version) {
     gw_host_url_authority(authority, sizeof(authority), g.public_host);
     snprintf(url, sizeof(url),
              "https://%s:%u/api/v1/update/download?platform=%s&version=%s&token=%" PRIu64,
-             authority, port, platform, version, g.token);
+             authority, port, platform, version, node->install_token);
     gw_js(j, "url", url);
     int rv = send_json(node, 3, 18, j);
     json_object_put(j);
@@ -1128,7 +1148,7 @@ static json_object *reported_rule(json_object *reported, json_object *rule) {
 }
 
 static void reply_apps(struct connection *http, const char *node, json_object *reported) {
-    if (!http->authorized || http->auth_generation != g.auth_generation) {
+    if (!http_authorized(http)) {
         http_error(http, 401, 1, "unauthorized");
         return;
     }
@@ -1176,18 +1196,244 @@ static void reply_apps(struct connection *http, const char *node, json_object *r
     json_object_put(root);
 }
 
+static const char *input_string(json_object *body, const char *field) {
+    json_object *value = gw_get(body, field);
+    if (!json_object_is_type(value, json_type_string))
+        return NULL;
+    const char *text = json_object_get_string(value);
+    return strlen(text) == (size_t)json_object_get_string_len(value) ? text : NULL;
+}
+
+static int reserved_email(const char *email) {
+    char admin[257];
+    return !strcmp(email, g.admin_email) ||
+           (!gw_email_normalize(g.user, admin) && !strcmp(email, admin));
+}
+
+static int authenticate_http(struct connection *c, const char *bearer) {
+    c->owner = 0;
+    c->install_token = 0;
+    c->account_name[0] = 0;
+    if (!bearer)
+        return 0;
+    uint64_t now = gw_wall_ns() / 1000000000;
+    if (gw_jwt_verify(bearer, g.user, g.token, g.secret, now)) {
+        c->owner = GW_ADMIN_OWNER;
+        c->install_token = g.token;
+        strcpy(c->account_name, g.user);
+        memcpy(c->account_salt, g.admin.salt, sizeof(c->account_salt));
+        return 1;
+    }
+    char user[257], email[257];
+    struct gw_member member;
+    if (gw_jwt_user(bearer, user) || gw_email_normalize(user, email) ||
+        gw_store_member_read(g.db, email, &member))
+        return 0;
+    int valid = gw_jwt_verify(bearer, member.account.user, member.token, member.account.secret, now);
+    if (valid) {
+        c->owner = member.id;
+        c->install_token = member.token;
+        strcpy(c->account_name, email);
+        memcpy(c->account_salt, member.account.salt, sizeof(c->account_salt));
+    }
+    OPENSSL_cleanse(&member, sizeof(member));
+    return valid;
+}
+
+static int http_authorized(const struct connection *c) {
+    if (!c->authorized)
+        return 0;
+    if (c->auth_generation == g.auth_generation)
+        return 1;
+    if (c->owner == GW_ADMIN_OWNER)
+        return !memcmp(c->account_salt, g.admin.salt, sizeof(c->account_salt));
+    struct gw_member member;
+    int valid = !gw_store_member_read(g.db, c->account_name, &member) && member.id == c->owner &&
+                !memcmp(c->account_salt, member.account.salt, sizeof(c->account_salt));
+    OPENSSL_cleanse(&member, sizeof(member));
+    return valid;
+}
+
+static void issue_login(struct connection *c, const struct gw_admin *account, uint64_t token, int admin) {
+    char *jwt = gw_jwt_issue(account->user, token, account->secret, gw_wall_ns() / 1000000000);
+    if (!jwt) {
+        http_error(c, 500, 1, "internal error");
+        return;
+    }
+    json_object *j = json_object_new_object(), *preset = json_object_new_object();
+    char number[32];
+    snprintf(number, sizeof(number), "%" PRIu64, token);
+    gw_js(j, "token", jwt);
+    gw_js(j, "installToken", number);
+    gw_js(j, "user", account->user);
+    gw_js(j, "email", admin ? g.admin_email : account->user);
+    json_object_object_add(j, "admin", json_object_new_boolean(admin));
+    gw_js(preset, "host", g.public_host);
+    gw_ju(preset, "port", g.ws_port);
+    gw_js(preset, "ca", g.enrollment_ca);
+    json_object_object_add(j, "gateway", preset);
+    gw_ju(j, "error", 0);
+    http_json(c, 200, j);
+    json_object_put(j);
+    OPENSSL_cleanse(jwt, strlen(jwt));
+    free(jwt);
+}
+
+static void handle_sign_in(struct connection *c, int registering) {
+    unsigned family = 0;
+    unsigned char address[16] = {0};
+    json_object *j = gw_json(c->request, c->request_length);
+    const char *user = input_string(j, registering ? "email" : "user");
+    const char *password = input_string(j, "password");
+    char email[257];
+    int has_email = user && !gw_email_normalize(user, email);
+    int admin = !registering && user && (!strcmp(user, g.user) || (has_email && reserved_email(email)));
+    enum sign_in_scope scope = registering ? GW_SIGN_UP : (admin || !has_email ? GW_SIGN_IN_ADMIN : GW_SIGN_IN_MEMBER);
+    if (login_limited(c, scope, &family, address)) {
+        if (j) json_object_put(j);
+        http_error(c, 429, 9, "too many login attempts");
+        return;
+    }
+    if (registering) {
+        if (!has_email || !password || strlen(password) < 8 || strlen(password) > 1024) {
+            http_error(c, 400, 1, "invalid email or password");
+        } else if (reserved_email(email)) {
+            http_error(c, 409, 1, "email already registered");
+        } else {
+            struct gw_member member;
+            int stored = gw_store_member_read(g.db, email, &member);
+            OPENSSL_cleanse(&member, sizeof(member));
+            if (stored == 0)
+                http_error(c, 409, 1, "email already registered");
+            else {
+                struct gw_admin account;
+                int result = stored < 0 || gw_admin_make(&account, email, password) ? -1 :
+                             gw_store_member_create(g.db, &account, g.token);
+                OPENSSL_cleanse(&account, sizeof(account));
+                if (result == 1)
+                    http_error(c, 409, 1, "email already registered");
+                else if (result || gw_store_member_read(g.db, email, &member))
+                    http_error(c, 503, 1, "account storage unavailable");
+                else {
+                    issue_login(c, &member.account, member.token, 0);
+                    OPENSSL_cleanse(&member, sizeof(member));
+                }
+            }
+        }
+    } else {
+        struct gw_member member;
+        int valid = password && (admin ? gw_admin_verify(&g.admin, password) :
+                     has_email && !gw_store_member_read(g.db, email, &member) &&
+                     gw_admin_verify(&member.account, password));
+        login_result(scope, family, address, valid);
+        if (valid)
+            issue_login(c, admin ? &g.admin : &member.account, admin ? g.token : member.token, admin);
+        else
+            http_error(c, j && json_object_is_type(j, json_type_object) ? 401 : 400, 1,
+                       j && json_object_is_type(j, json_type_object) ? "invalid credentials" : "invalid JSON");
+        OPENSSL_cleanse(&member, sizeof(member));
+    }
+    if (j)
+        json_object_put(j);
+}
+
+static int bootstrap_path(const char *uri) {
+    return !strcmp(uri, "/api/v1/install/bootstrap");
+}
+
+static void issue_install_link(struct connection *c) {
+    json_object *j = gw_json(c->request, c->request_length);
+    const char *platform = input_string(j, "platform");
+    const char *requested = input_string(j, "version");
+    char version[32] = "";
+    if (!platform || (strcmp(platform, "linux") && strcmp(platform, "macos") &&
+        strcmp(platform, "windows") && strcmp(platform, "android"))) {
+        http_error(c, 400, 1, "invalid platform");
+        goto done;
+    }
+    if (!strcmp(platform, "linux") || !strcmp(platform, "macos")) {
+        struct gw_install_package packages[GW_INSTALLER_MAX_ARCHES];
+        const struct gw_installer *installer = !strcmp(platform, "linux") ? &gw_linux_installer : &gw_macos_installer;
+        size_t count = 0;
+        if (installer_packages(installer, "", packages, &count) || !count) {
+            http_error(c, 404, 1, "no supported packages found for this platform");
+            goto done;
+        }
+    } else {
+        char sha[65], filename[260];
+        uint64_t size;
+        if (!gw_store_package_key_valid(platform, requested) ||
+            gw_store_update_find(g.db, platform, requested, sha, filename, &size)) {
+            http_error(c, 404, 1, "package not found");
+            goto done;
+        }
+        strcpy(version, requested);
+    }
+    uint64_t now = gw_mono_ms();
+    struct install_ticket *selected = NULL;
+    for (size_t i = 0; i < sizeof(install_tickets) / sizeof(install_tickets[0]); ++i) {
+        struct install_ticket *entry = &install_tickets[i];
+        if (entry->token == c->install_token &&
+            entry->expires > now && !strcmp(entry->platform, platform) && !strcmp(entry->version, version)) {
+            selected = entry;
+            break;
+        }
+        if (!selected && entry->expires <= now)
+            selected = entry;
+    }
+    unsigned char random[24];
+    if (!selected || RAND_bytes(random, sizeof(random)) != 1) {
+        http_error(c, 503, 1, "installation link unavailable");
+        goto done;
+    }
+    update_hex(random, sizeof(random), selected->key);
+    strcpy(selected->platform, platform);
+    strcpy(selected->version, version);
+    selected->token = c->install_token;
+    selected->expires = now + 600000;
+    char authority[300], url[480];
+    gw_host_url_authority(authority, sizeof(authority), g.public_host);
+    snprintf(url, sizeof(url), "https://%s:%u/api/v1/install/bootstrap?ticket=%s",
+             authority, g.ws_port, selected->key);
+    json_object *response = json_object_new_object();
+    gw_js(response, "url", url);
+    gw_ju(response, "expiresIn", 600);
+    http_json(c, 200, response);
+    json_object_put(response);
+done:
+    if (j) json_object_put(j);
+}
+
+static struct install_ticket *read_install_ticket(struct lws *wsi) {
+    char key[49];
+    if (query(wsi, "ticket=", key, sizeof(key)) || strlen(key) != 48)
+        return NULL;
+    uint64_t now = gw_mono_ms();
+    for (size_t i = 0; i < sizeof(install_tickets) / sizeof(install_tickets[0]); ++i) {
+        struct install_ticket *entry = &install_tickets[i];
+        if (entry->expires > now && gw_secret_equal(entry->key, key) && install_owner(entry->token) > 0)
+            return entry;
+    }
+    return NULL;
+}
+
 static void handle_http(struct connection *c) {
     if (c->handled || c->request_node)
         return;
     int download = !c->post && !c->put && !c->deleting &&
                    !strcmp(c->uri, "/api/v1/update/download");
-    if (!download && !on_api_vhost(c->wsi)) {
+    int bootstrap = !c->post && !c->put && !c->deleting && bootstrap_path(c->uri);
+    if (!download && !bootstrap && !on_api_vhost(c->wsi)) {
         http_error(c, 404, 1, "not found");
         return;
     }
     if (!c->put && !c->deleting && !strcmp(c->uri, "/api/v1/releases/sync")) {
-        if (!c->authorized || c->auth_generation != g.auth_generation) {
+        if (!http_authorized(c)) {
             http_error(c, 401, 1, "unauthorized");
+            return;
+        }
+        if (c->owner != GW_ADMIN_OWNER) {
+            http_error(c, 403, 1, "administrator required");
             return;
         }
         poll_release_sync();
@@ -1220,7 +1466,7 @@ static void handle_http(struct connection *c) {
             http_error(c, 400, 1, "no upload in progress");
             return;
         }
-        if (c->auth_generation != g.auth_generation) {
+        if (!http_authorized(c)) {
             upload_abort(c);
             http_error(c, 401, 1, "unauthorized");
             return;
@@ -1295,7 +1541,7 @@ static void handle_http(struct connection *c) {
         return;
     }
     if (!c->post && !c->put && !strcmp(c->uri, "/api/v1/updates")) {
-        if (!c->authorized || c->auth_generation != g.auth_generation) {
+        if (!http_authorized(c)) {
             http_error(c, 401, 1, "unauthorized");
             return;
         }
@@ -1311,15 +1557,24 @@ static void handle_http(struct connection *c) {
         return;
     }
     int installer = !c->post && !c->put && !c->deleting && !strcmp(c->uri, "/api/v1/update/install");
-    if (download || installer) {
+    if (download || installer || bootstrap) {
         /* The client presents the shared install token, the same secret it uses
          * to authenticate the WebSocket, so no extra credential is introduced. */
         char platform[16], version[32]="", token[32], auth[128];
-        if (query(c->wsi, "platform=", platform, sizeof(platform))) {
+        struct install_ticket *ticket = bootstrap ? read_install_ticket(c->wsi) : NULL;
+        if (bootstrap && !ticket) {
+            http_error(c, 403, 1, "installation link expired");
+            return;
+        }
+        if (ticket) {
+            strcpy(platform, ticket->platform);
+            strcpy(version, ticket->version);
+            installer = 1;
+        } else if (query(c->wsi, "platform=", platform, sizeof(platform))) {
             http_error(c, 400, 1, "platform is required");
             return;
         }
-        int has_version=!query(c->wsi,"version=",version,sizeof(version));
+        int has_version=ticket ? *version != 0 : !query(c->wsi,"version=",version,sizeof(version));
         const struct gw_installer *script=NULL;
         if(!strcmp(platform,"linux") || !strncmp(platform,"linux-",6))
             script=&gw_linux_installer;
@@ -1328,13 +1583,14 @@ static void handle_http(struct connection *c) {
         uint64_t supplied = 0;
         int header=lws_hdr_copy(c->wsi,auth,sizeof(auth),WSI_TOKEN_HTTP_AUTHORIZATION);
         int install_auth=header>8 && !strncmp(auth,"FastP2P ",8) && fastp2p_install_key_valid(auth+8) &&
-                         !gw_decimal(auth+8,&supplied) && supplied==g.token;
-        if (installer ? (!c->authorized || c->auth_generation != g.auth_generation) :
+                         !gw_decimal(auth+8,&supplied) && install_owner(supplied)>0;
+        if (!ticket && (installer ? !http_authorized(c) :
             (!install_auth && (query(c->wsi, "token=", token, sizeof(token)) || gw_decimal(token, &supplied) ||
-             supplied != g.token))) {
+             install_owner(supplied)<=0)))) {
             http_error(c, 401, 1, "unauthorized");
             return;
         }
+        uint64_t installer_token = ticket ? ticket->token : c->install_token;
         if(installer && script){
             if(!gw_store_package_key_valid(platform,has_version?version:"1")){
                 http_error(c,400,1,"invalid platform or version");return;
@@ -1349,11 +1605,13 @@ static void handle_http(struct connection *c) {
                 http_error(c,503,1,"cannot prepare installer; retry after synchronization");return;
             }
             if(script==&gw_macos_installer)
-                snprintf(headers,sizeof(headers),"Content-Disposition: attachment; filename=\"fastp2p-macos-%" PRIu64 ".sh\"\r\nCache-Control: no-store\r\n",g.token);
+                snprintf(headers,sizeof(headers),"Content-Disposition: attachment; filename=\"fastp2p-macos-%" PRIu64 ".sh\"\r\nCache-Control: no-store\r\n",installer_token);
             else
-                snprintf(headers,sizeof(headers),"Content-Disposition: attachment; filename=\"fastp2p-%" PRIu64 "\"\r\nCache-Control: no-store\r\n",g.token);
+                snprintf(headers,sizeof(headers),"Content-Disposition: attachment; filename=\"fastp2p-%" PRIu64 "\"\r\nCache-Control: no-store\r\n",installer_token);
             if(lws_serve_http_file(c->wsi,generated,"application/octet-stream",headers,(int)strlen(headers))<0)
                 http_error(c,503,1,"cannot serve installer");
+            else if (ticket)
+                ticket->expires = 0;
             return;
         }
         if(!has_version){http_error(c,400,1,"version is required");return;}
@@ -1374,18 +1632,20 @@ static void handle_http(struct connection *c) {
                                     !strcmp(platform, "android") ? ".apk" : "";
             snprintf(headers, sizeof(headers),
                      "Content-Disposition: attachment; filename=\"fastp2p-%s-v%s-%" PRIu64 "%s\"\r\n"
-                     "Cache-Control: no-store\r\n", platform, version, g.token, extension);
+                     "Cache-Control: no-store\r\n", platform, version, installer_token, extension);
         }
         if (lws_serve_http_file(c->wsi, path, "application/octet-stream", headers, (int)strlen(headers)) < 0) {
             http_error(c, 503, 1, "cannot serve package");
             return;
         }
+        if (ticket)
+            ticket->expires = 0;
         return;
     }
     if (c->post && !strcmp(c->uri, "/api/v1/upgrades")) {
         /* Batch upgrade: every connected node whose version is behind the newest
          * package for its platform, or an explicit target version. */
-        if (!c->authorized || c->auth_generation != g.auth_generation) {
+        if (!http_authorized(c)) {
             http_error(c, 401, 1, "unauthorized");
             return;
         }
@@ -1405,7 +1665,7 @@ static void handle_http(struct connection *c) {
         json_object *skipped = json_object_new_array();
         for (unsigned i = 0; i < g.max_nodes; ++i) {
             struct connection *node = g.nodes[i];
-            if (!node)
+            if (!node || node->owner != c->owner)
                 continue;
             const char *platform = platform_for_os(node->os);
             if (!platform)
@@ -1465,53 +1725,17 @@ static void handle_http(struct connection *c) {
                           "\"" GW_VERSION "\"}"));
         return;
     }
-    if (c->post && !strcmp(c->uri, "/api/v1/user/login")) {
-        /* Reject before the expensive PBKDF2 verification when this source has
-         * used up its budget or is serving a lockout. */
-        unsigned family = 0;
-        unsigned char address[16] = {0};
-        if (login_limited(c, &family, address)) {
-            http_error(c, 429, 9, "too many login attempts");
-            return;
-        }
-        json_object *j = gw_json(c->request, c->request_length);
-        if (!j || !json_object_is_type(j, json_type_object)) {
-            if (j)
-                json_object_put(j);
-            login_result(family, address, 0);
-            http_error(c, 400, 1, "invalid JSON");
-            return;
-        }
-        int valid = gw_secret_equal(gw_string(j, "user"), g.user) &&
-                    gw_admin_verify(&g.admin, gw_string(j, "password"));
-        if (j)
-            json_object_put(j);
-        login_result(family, address, valid);
-        if (!valid) {
-            http_error(c, 401, 1, "invalid credentials");
-            return;
-        }
-        char *jwt = gw_jwt_issue(g.user, g.token, g.secret, gw_wall_ns() / 1000000000);
-        if (!jwt) {
-            http_error(c, 500, 1, "internal error");
-            return;
-        }
-        j = json_object_new_object();
-        char number[32];
-        snprintf(number, sizeof(number), "%" PRIu64, g.token);
-        gw_js(j, "token", jwt);
-        gw_js(j, "installToken", number);
-        json_object *preset = json_object_new_object();
-        gw_js(preset, "host", g.public_host); gw_ju(preset, "port", g.ws_port);
-        gw_js(preset, "ca", g.enrollment_ca); json_object_object_add(j, "gateway", preset);
-        gw_ju(j, "error", 0);
-        http_json(c, 200, j);
-        json_object_put(j);
-        free(jwt);
+    if (c->post && (!strcmp(c->uri, "/api/v1/user/login") ||
+                    !strcmp(c->uri, "/api/v1/user/register"))) {
+        handle_sign_in(c, !strcmp(c->uri, "/api/v1/user/register"));
         return;
     }
-    if (!c->authorized || c->auth_generation != g.auth_generation) {
+    if (!http_authorized(c)) {
         http_error(c, 401, 1, "unauthorized");
+        return;
+    }
+    if (c->post && !strcmp(c->uri, "/api/v1/install/link")) {
+        issue_install_link(c);
         return;
     }
     if (c->post && !strcmp(c->uri, "/api/v1/user/account")) {
@@ -1531,21 +1755,39 @@ static void handle_http(struct connection *c) {
             strlen(gw_string(j, "currentPassword")) != (size_t)json_object_get_string_len(gw_get(j, "currentPassword"))) {
             json_object_put(j); http_error(c, 400, 1, "invalid account settings"); return;
         }
-        struct gw_admin next;
-        if (!gw_admin_verify(&g.admin, gw_string(j, "currentPassword"))) {
+        int admin = c->owner == GW_ADMIN_OWNER;
+        struct gw_member member;
+        if (!admin && gw_store_member_read(g.db, c->account_name, &member)) {
+            json_object_put(j); http_error(c, 503, 1, "account storage unavailable"); return;
+        }
+        int valid = gw_admin_verify(admin ? &g.admin : &member.account, gw_string(j, "currentPassword"));
+        OPENSSL_cleanse(&member, sizeof(member));
+        if (!valid) {
             json_object_put(j); http_error(c, 403, 1, "current password incorrect"); return;
         }
-        if (strlen(password) < 8 || gw_admin_make(&next, user, password)) {
+        char email[257];
+        int conflicts = admin && !gw_email_normalize(user, email) &&
+                        gw_store_member_read(g.db, email, &member) != 1;
+        OPENSSL_cleanse(&member, sizeof(member));
+        struct gw_admin next;
+        if ((!admin && strcmp(user, c->account_name)) || conflicts ||
+            strlen(password) < 8 || gw_admin_make(&next, user, password)) {
             json_object_put(j); http_error(c, 400, 1, "invalid account settings"); return;
         }
         json_object_put(j);
-        if (gw_store_admin_write(g.db, &next)) {
+        if (admin ? gw_store_admin_write(g.db, &next) : gw_store_member_password(g.db, c->owner, &next)) {
             OPENSSL_cleanse(&next, sizeof(next));
             http_error(c, 503, 1, "account storage unavailable"); return;
         }
-        g.admin = next; OPENSSL_cleanse(&next, sizeof(next));
-        g.user = g.admin.user;
-        snprintf(g.secret, sizeof(g.secret), "%s", g.admin.secret);
+        if (admin) {
+            g.admin = next;
+            g.user = g.admin.user;
+            snprintf(g.secret, sizeof(g.secret), "%s", g.admin.secret);
+        }
+        OPENSSL_cleanse(&next, sizeof(next));
+        for (size_t i = 0; i < sizeof(install_tickets) / sizeof(install_tickets[0]); ++i)
+            if (install_tickets[i].token == c->install_token)
+                install_tickets[i].expires = 0;
         ++g.auth_generation;
         http_error(c, 200, 0, "account updated; sign in again"); return;
     }
@@ -1554,6 +1796,9 @@ static void handle_http(struct connection *c) {
         const char *name = c->uri + strlen(prefix);
         if (strncmp(c->uri, prefix, strlen(prefix)) || !gw_node_valid(name)) {
             http_error(c, 404, 1, "not found"); return;
+        }
+        if (gw_store_node_owner(g.db, name) != c->owner) {
+            http_error(c, 404, 1, "node not found"); return;
         }
         if (find_node(gw_node_id(name))) {
             http_error(c, 409, 1, "node is online"); return;
@@ -1568,14 +1813,16 @@ static void handle_http(struct connection *c) {
     if (!c->post && !strcmp(c->uri, "/api/v1/status")) {
         unsigned count = 0;
         for (unsigned i = 0; i < g.max_nodes; ++i)
-            if (g.nodes[i] && !g.nodes[i]->closing)
+            if (g.nodes[i] && !g.nodes[i]->closing && g.nodes[i]->owner == c->owner)
                 ++count;
         json_object *j = json_object_new_object();
         gw_js(j, "implementation", "c");
         gw_js(j, "version", GW_VERSION);
-        gw_js(j, "user", g.user);
+        gw_js(j, "user", c->account_name);
+        gw_js(j, "email", c->owner == GW_ADMIN_OWNER ? g.admin_email : c->account_name);
+        json_object_object_add(j, "admin", json_object_new_boolean(c->owner == GW_ADMIN_OWNER));
         uint64_t total = 0;
-        if (gw_store_count(g.db, &total)) {
+        if (gw_store_count_for(g.db, c->owner, &total)) {
             json_object_put(j);
             http_error(c, 503, 1, "node storage unavailable");
             return;
@@ -1585,7 +1832,7 @@ static void handle_http(struct connection *c) {
         gw_ju(j, "online", count);
         gw_ju(j, "capacity", g.max_nodes);
         gw_ju(j, "uptimeSeconds", (gw_mono_ms() - g.started_ms) / 1000);
-        gw_ju(j, "queuedBytes", g.queued);
+        gw_ju(j, "queuedBytes", c->owner == GW_ADMIN_OWNER ? g.queued : 0);
         gw_ju(j, "queueLimitBytes", GW_TOTAL_QUEUED);
         gw_ju(j, "wssPort", g.ws_port);
         gw_ju(j, "apiPort", g.api_port);
@@ -1595,7 +1842,7 @@ static void handle_http(struct connection *c) {
         return;
     }
     if (!c->post && !strcmp(c->uri, "/api/v1/devices")) {
-        json_object *j = devices();
+        json_object *j = devices(c->owner);
         http_json(c, 200, j);
         json_object_put(j);
         return;
@@ -1615,7 +1862,8 @@ static void handle_http(struct connection *c) {
             http_error(c, 400, 1, "invalid page size");
             return;
         }
-        json_object *j = exact ? gw_store_list_exact(g.db, name) : gw_store_list(g.db, search, limit, offset);
+        json_object *j = gw_store_list_for(g.db, c->owner, exact ? name : search,
+                                           exact ? 1 : limit, exact ? 0 : offset, exact);
         if (!j) {
             http_error(c, 503, 1, "node storage unavailable");
             return;
@@ -1651,6 +1899,10 @@ static void handle_http(struct connection *c) {
         http_error(c, 400, 1, "invalid node name");
         return;
     }
+    if (gw_store_node_owner(g.db, name) != c->owner) {
+        http_error(c, 404, 1, "node not found");
+        return;
+    }
     /* The database is the source of truth. A node does not have to be online
      * for its rules to be listed, added, edited or removed; the change is simply
      * queued by being stored and applied on the client's next connection. */
@@ -1672,6 +1924,51 @@ static void handle_http(struct connection *c) {
             c->deadline = gw_mono_ms() + 1500;
         } else
             reply_apps(c, name, NULL);
+        return;
+    }
+    if (c->post && !strcmp(end, "/rename")) {
+        json_object *j = gw_json(c->request, c->request_length);
+        const char *input = input_string(j, "name");
+        if (!input || !gw_node_valid(input)) {
+            if (j) json_object_put(j);
+            http_error(c, 400, 1, "invalid node name");
+            return;
+        }
+        char renamed[32];
+        strcpy(renamed, input);
+        json_object_put(j);
+        int result = gw_store_rename(g.db, c->owner, name, renamed);
+        if (result) {
+            if (result == 1) http_error(c, 409, 1, "node name already in use");
+            else if (result == 2) http_error(c, 404, 1, "node not found");
+            else if (result == 3) http_error(c, 409, 1, "client rename unsupported");
+            else http_error(c, 503, 1, "node storage unavailable");
+            return;
+        }
+        if (strcmp(name, renamed)) {
+            if (target) {
+                strcpy(target->node, renamed);
+                unregister_node(target);
+                close_node(target);
+            }
+            json_object *notice = json_object_new_object();
+            gw_js(notice, "oldName", name);
+            gw_js(notice, "name", renamed);
+            for (unsigned i = 0; i < g.max_nodes; ++i) {
+                struct connection *peer = g.nodes[i];
+                if (!peer || peer->closing || peer->owner != c->owner)
+                    continue;
+                if (peer->rename_supported)
+                    send_json(peer, 3, 21, notice);
+                if (sync_node_rules(peer))
+                    close_node(peer); /* Reload the committed rules on reconnect. */
+            }
+            json_object_put(notice);
+        }
+        json_object *response = json_object_new_object();
+        gw_js(response, "name", renamed);
+        http_json(c, 200, response);
+        json_object_put(response);
         return;
     }
     if (!strcmp(end, "/restart")) {
@@ -1935,7 +2232,19 @@ static unsigned query_integer(struct lws *wsi, const char *name, unsigned limit,
 static int on_api_vhost(struct lws *wsi) {
     return lws_get_vhost(wsi) == g.api_vhost || lws_get_vhost(wsi) == g.api_vhost6;
 }
-static int login_status(struct lws *wsi) {
+static int scope_device(sqlite3_int64 owner, char device[33]) {
+    if (owner == GW_ADMIN_OWNER)
+        return 0;
+    unsigned char input[40], digest[32];
+    unsigned length;
+    gw_put64(input, (uint64_t)owner);
+    memcpy(input + 8, device, 32);
+    if (EVP_Digest(input, sizeof(input), digest, &length, EVP_sha256(), NULL) != 1 || length != 32)
+        return -1;
+    update_hex(digest, 16, device);
+    return 0;
+}
+static int login_status(struct lws *wsi, sqlite3_int64 *account, uint64_t *install_token) {
     char uri[256], node[32], token[32];
     uint64_t value;
     if (lws_get_vhost(wsi) != g.ws_vhost && lws_get_vhost(wsi) != g.ws_alt_vhost &&
@@ -1949,8 +2258,11 @@ static int login_status(struct lws *wsi) {
         return 426;
     if (query(wsi, "node=", node, sizeof(node)) || !gw_node_valid(node))
         return 400;
-    if (query(wsi, "token=", token, sizeof(token)) || gw_decimal(token, &value) || value != g.token)
+    if (query(wsi, "token=", token, sizeof(token)) || gw_decimal(token, &value))
         return 401;
+    sqlite3_int64 owner = install_owner(value);
+    if (owner <= 0)
+        return owner < 0 ? 503 : 401;
     int automatic = query_integer(wsi, "autonode=", 1, 0) != 0;
     int automatic_known = 0;
     if (automatic) {
@@ -1967,18 +2279,23 @@ static int login_status(struct lws *wsi) {
         padded[length] = 0;
         if (!gw_node_valid(padded))
             return 400;
+        if (scope_device(owner, device))
+            return 503;
         automatic_known = gw_store_resolve(g.db, device, node);
         if (automatic_known < 0)
             return 503;
     } else {
-        int status = gw_store_manual_status(g.db, node);
+        if (query_integer(wsi, "nodeRename=", 1, 0) == 1 &&
+            gw_store_alias_for(g.db, owner, node, node) < 0)
+            return 503;
+        int status = gw_store_manual_status_for(g.db, owner, node);
         if (status)
             return status > 0 ? 409 : 503;
     }
     struct connection *existing = find_node(gw_node_id(node));
     if (automatic && !automatic_known)
         existing = NULL;
-    if (existing && strcmp(existing->node, node))
+    if (existing && (existing->owner != owner || strcmp(existing->node, node)))
         return 409;
     if (!existing) {
         unsigned i = 0;
@@ -1987,14 +2304,22 @@ static int login_status(struct lws *wsi) {
         if (i == g.max_nodes)
             return 503;
     }
+    if (account)
+        *account = owner;
+    if (install_token)
+        *install_token = value;
     return 0;
 }
 static int establish(struct lws *wsi, struct connection *c) {
-    if (login_status(wsi))
+    sqlite3_int64 owner;
+    uint64_t install_token;
+    if (login_status(wsi, &owner, &install_token))
         return -1;
     memset(c, 0, sizeof(*c));
     c->wsi = wsi;
     c->slot = -1;
+    c->owner = owner;
+    c->install_token = install_token;
     /* A connection is at least as capable as the family its socket arrived on
      * (SPEC §1). The old code refused any non-AF_INET peer outright; with
      * per-family vhosts the source is normalized per family instead. */
@@ -2007,11 +2332,15 @@ static int establish(struct lws *wsi, struct connection *c) {
     char requested[32], device[33];
     strcpy(requested, c->node);
     int automatic = query_integer(wsi, "autonode=", 1, 0) != 0;
+    c->rename_supported = automatic || query_integer(wsi, "nodeRename=", 1, 0) == 1;
+    if (!automatic && c->rename_supported && gw_store_alias_for(g.db, owner, requested, requested) < 0)
+        return -1;
     device[0] = 0;
-    if (automatic && (query(wsi, "deviceid=", device, sizeof(device)) ||
+    if (automatic && (query(wsi, "deviceid=", device, sizeof(device)) || !gw_device_valid(device) ||
+                      scope_device(owner, device) ||
                       query(wsi, "hostname=", c->hostname, sizeof(c->hostname))))
         return -1;
-    if (gw_store_claim(g.db, requested, c->hostname, device, automatic, c->node))
+    if (gw_store_claim_for(g.db, owner, requested, c->hostname, device, automatic, c->node))
         return -1;
     c->id = gw_node_id(c->node);
     struct connection *previous = find_node(c->id);
@@ -2072,10 +2401,11 @@ static int establish(struct lws *wsi, struct connection *c) {
     /* SPEC §3: the bracketed "[<v6>]:<port>" TCP echo is only enabled under V3,
      * which a new client uses for v6 TCP probing. */
     gw_ju(login, "tcpProbeV3", 1);
-    gw_js(login, "user", g.user);
+    gw_js(login, "user", owner == GW_ADMIN_OWNER ? g.user : "");
     gw_js(login, "node", c->node);
+    gw_ju(login, "nodeRename", 1);
     gw_js(login, "protocol", "fastp2p2");
-    gw_ju(login, "token", g.token);
+    gw_ju(login, "token", c->install_token);
     gw_ju(login, "ts", gw_wall_ns() / 1000000000);
     gw_ju(login, "error", 0);
     int result = send_json(c, 0, 0, login);
@@ -2087,7 +2417,7 @@ static int callback(struct lws *wsi, enum lws_callback_reasons reason, void *use
     struct connection *c = user;
     switch (reason) {
     case LWS_CALLBACK_HTTP_CONFIRM_UPGRADE: {
-        int status = login_status(wsi);
+        int status = login_status(wsi, NULL, NULL);
         if (status) {
             lws_return_http_status(wsi, (unsigned)status, NULL);
             return 1;
@@ -2095,7 +2425,7 @@ static int callback(struct lws *wsi, enum lws_callback_reasons reason, void *use
         return 0;
     }
     case LWS_CALLBACK_FILTER_PROTOCOL_CONNECTION:
-        return login_status(wsi) ? 1 : 0;
+        return login_status(wsi, NULL, NULL) ? 1 : 0;
     case LWS_CALLBACK_ESTABLISHED:
         return establish(wsi, c);
     case LWS_CALLBACK_RECEIVE: {
@@ -2142,7 +2472,7 @@ static int callback(struct lws *wsi, enum lws_callback_reasons reason, void *use
         int method_length = 0;
         int method = lws_http_get_uri_and_method(wsi, &method_uri, &method_length);
         if (!on_api_vhost(wsi) &&
-            (method != LWSHUMETH_GET || strcmp(c->uri, "/api/v1/update/download"))) {
+            (method != LWSHUMETH_GET || (strcmp(c->uri, "/api/v1/update/download") && !bootstrap_path(c->uri)))) {
             http_error(c, 404, 1, "not found");
             return 0;
         }
@@ -2156,15 +2486,18 @@ static int callback(struct lws *wsi, enum lws_callback_reasons reason, void *use
         c->deleting = method == LWSHUMETH_DELETE;
         char auth[8192];
         int n = lws_hdr_copy(wsi, auth, sizeof(auth), WSI_TOKEN_HTTP_AUTHORIZATION);
-        c->authorized =
-            n > 0 && gw_jwt_verify(auth, g.user, g.token, g.secret, gw_wall_ns() / 1000000000);
+        c->authorized = authenticate_http(c, n > 0 ? auth : NULL);
         c->auth_generation = g.auth_generation;
         if (is_upload) {
             /* Stream the package to a temporary file; it is far larger than the
              * in-memory HTTP body limit. */
             c->put = 1;
-            if (!c->authorized || c->auth_generation != g.auth_generation) {
+            if (!http_authorized(c)) {
                 http_error(c, 401, 1, "unauthorized");
+                return 0;
+            }
+            if (c->owner != GW_ADMIN_OWNER) {
+                http_error(c, 403, 1, "administrator required");
                 return 0;
             }
             char platform[16], version[32], length[32];
@@ -2215,7 +2548,8 @@ static int callback(struct lws *wsi, enum lws_callback_reasons reason, void *use
             return 0;
         }
         if (c->post) {
-            if (strcmp(c->uri, "/api/v1/user/login") && !c->authorized) {
+            if (strcmp(c->uri, "/api/v1/user/login") &&
+                strcmp(c->uri, "/api/v1/user/register") && !c->authorized) {
                 http_error(c, 401, 1, "unauthorized");
                 return 0;
             }
@@ -2557,6 +2891,20 @@ return 1;
 sqlite3_close(g.db); return 1;
     }
     g.user = g.admin.user;
+    const char *email = getenv("FASTP2P_ADMIN_EMAIL");
+    char owner_user_email[257];
+    struct gw_member existing;
+    if (gw_email_normalize(email && *email ? email : "a16673997618@gmail.com", g.admin_email) ||
+        gw_store_member_read(g.db, g.admin_email, &existing) != 1 ||
+        (!gw_email_normalize(g.user, owner_user_email) &&
+         gw_store_member_read(g.db, owner_user_email, &existing) != 1) ||
+        gw_store_member_owner(g.db, g.token) != 0) {
+        OPENSSL_cleanse(&existing, sizeof(existing));
+        fputs("Invalid administrator email or installation token conflict\n", stderr);
+        sqlite3_close(g.db);
+        return 1;
+    }
+    OPENSSL_cleanse(&existing, sizeof(existing));
     snprintf(g.secret, sizeof(g.secret), "%s", g.admin.secret);
     g.auth_generation = 1;
     if (g.reset_admin) {

@@ -33,6 +33,8 @@ void gw_host_url_authority(char *out, size_t capacity, const char *host);
 uint64_t gw_totp(uint64_t token, uint64_t timestamp);
 int gw_token_valid(uint64_t code, uint64_t token, uint64_t timestamp);
 char *gw_jwt_issue(const char *user, uint64_t token, const char *secret, uint64_t now);
+/* Unverified lookup key. Always verify the signature before using it as identity. */
+int gw_jwt_user(const char *text, char user[257]);
 int gw_jwt_verify(const char *text, const char *user, uint64_t token, const char *secret,
                   uint64_t now);
 int gw_secret_equal(const char *a, const char *b);

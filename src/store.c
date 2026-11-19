@@ -31,7 +31,7 @@ static int nat_columns(sqlite3 *db) {
                                      {"tcp_nat6_samples", 0},
                                      {"tcp_nat6_ips", 0},
                                      {"families", 1},
-                                     {"nat_level", 0},
+                                     {"nat_level", 0}, {"owner", 1}, {"rename_supported", 0},
  {"tcp_level", 0}};
     for (unsigned i = 0; i < sizeof(columns) / sizeof(columns[0]); ++i) {
         sqlite3_stmt *s = NULL;
@@ -60,7 +60,7 @@ int gw_store_open(sqlite3 **out, const char *path) {
     sqlite3_int64 app = 0, version = 0, tables = 0;
     if (scalar(db, "PRAGMA application_id", &app) || scalar(db, "PRAGMA user_version", &version) ||
         scalar(db, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", &tables) ||
-        (app != APP_ID && app != PREVIOUS_APP_ID && (app != 0 || tables != 0)) || version > 8)
+        (app != APP_ID && app != PREVIOUS_APP_ID && (app != 0 || tables != 0)) || version > 9)
         goto fail;
     /* One event-loop writer; rollback journaling also supports simple offline backups. */
     if (sql(db, "PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF;") ||
@@ -74,9 +74,15 @@ int gw_store_open(sqlite3 **out, const char *path) {
                 "first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, last_offline INTEGER NOT NULL DEFAULT 0,"
                 "online INTEGER NOT NULL DEFAULT 0 CHECK(online IN(0,1)));"
                 "CREATE INDEX IF NOT EXISTS nodes_order ON nodes(online DESC, name);"
+                "CREATE TABLE IF NOT EXISTS node_aliases("
+                "name TEXT PRIMARY KEY,node_id TEXT NOT NULL UNIQUE,node TEXT NOT NULL);"
                 "CREATE TABLE IF NOT EXISTS admin(id INTEGER PRIMARY KEY CHECK(id=1),username TEXT NOT NULL,"
                 "salt BLOB NOT NULL CHECK(length(salt)=16),password_hash BLOB NOT NULL CHECK(length(password_hash)=32),"
                 "iterations INTEGER NOT NULL,jwt_secret TEXT NOT NULL CHECK(length(jwt_secret)=64));"
+                "CREATE TABLE IF NOT EXISTS members(id INTEGER PRIMARY KEY CHECK(id>1),email TEXT NOT NULL UNIQUE,"
+                "salt BLOB NOT NULL CHECK(length(salt)=16),password_hash BLOB NOT NULL CHECK(length(password_hash)=32),"
+                "iterations INTEGER NOT NULL,jwt_secret TEXT NOT NULL CHECK(length(jwt_secret)=64),"
+                "install_token INTEGER NOT NULL UNIQUE CHECK(install_token BETWEEN 1000000000000000 AND 9999999999999999));"
                 "CREATE TABLE IF NOT EXISTS rules("
                 "node TEXT NOT NULL,protocol TEXT NOT NULL,src_port INTEGER NOT NULL,"
                 "payload TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN(0,1)),"
@@ -100,7 +106,8 @@ int gw_store_open(sqlite3 **out, const char *path) {
                 "CREATE TABLE IF NOT EXISTS node_configs(node TEXT PRIMARY KEY,fields TEXT NOT NULL,"
                 "revision INTEGER NOT NULL,state TEXT NOT NULL,ack_revision INTEGER NOT NULL);"
                 "PRAGMA application_id=1179660880;") || nat_columns(db) ||
-        sql(db, "PRAGMA user_version=8; UPDATE nodes SET online=0; COMMIT;"))
+        sql(db, "CREATE INDEX IF NOT EXISTS nodes_owner_order ON nodes(owner,online DESC,name);"
+                "PRAGMA user_version=9; UPDATE nodes SET online=0; COMMIT;"))
         goto fail;
     *out = db;
     return 0;
@@ -142,8 +149,8 @@ int gw_store_delete_offline(sqlite3 *db, const char *name) {
     sqlite3_finalize(s);
     if (!ok) {sql(db,"ROLLBACK");return -1;}
     if (changed) {
-        const char *tables[]={"rules","rule_nodes","node_configs"};
-        for(unsigned i=0;i<3;++i) {
+        const char *tables[]={"rules","rule_nodes","node_configs","node_aliases"};
+        for(unsigned i=0;i<sizeof(tables)/sizeof(tables[0]);++i) {
             char query[100];snprintf(query,sizeof(query),"DELETE FROM %s WHERE node=?",tables[i]);
             if(sqlite3_prepare_v2(db,query,-1,&s,NULL)!=SQLITE_OK){sql(db,"ROLLBACK");return -1;}
             sqlite3_bind_text(s,1,name,-1,SQLITE_TRANSIENT);ok=sqlite3_step(s)==SQLITE_DONE;sqlite3_finalize(s);
@@ -159,11 +166,11 @@ int gw_store_delete_offline(sqlite3 *db, const char *name) {
     sqlite3_finalize(s);
     return row == SQLITE_ROW ? 2 : row == SQLITE_DONE ? 1 : -1;
 }
-int gw_store_manual_status(sqlite3 *db, const char *name) {
+int gw_store_manual_status_for(sqlite3 *db, sqlite3_int64 owner, const char *name) {
     sqlite3_stmt *statement = NULL;
     char id[32];
     snprintf(id, sizeof(id), "%" PRIu64, gw_node_id(name));
-    if (sqlite3_prepare_v2(db, "SELECT name,device_id FROM nodes WHERE name=? OR node_id=?",
+    if (sqlite3_prepare_v2(db, "SELECT name,device_id,owner FROM nodes WHERE name=? OR node_id=?",
                           -1, &statement, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_text(statement, 1, name, -1, SQLITE_TRANSIENT);
@@ -171,11 +178,25 @@ int gw_store_manual_status(sqlite3 *db, const char *name) {
     int result = sqlite3_step(statement), status = 0;
     if (result == SQLITE_ROW)
         status = strcmp((const char *)sqlite3_column_text(statement, 0), name) ||
-                 sqlite3_column_type(statement, 1) != SQLITE_NULL;
-    else if (result != SQLITE_DONE)
-        status = -1;
+                 sqlite3_column_type(statement, 1) != SQLITE_NULL ||
+                 sqlite3_column_int64(statement, 2) != owner;
+    else
+        status = result == SQLITE_DONE ? gw_store_alias_reserved(db, name) : -1;
     sqlite3_finalize(statement);
     return status;
+}
+int gw_store_manual_status(sqlite3 *db, const char *name) {
+    return gw_store_manual_status_for(db, 1, name);
+}
+sqlite3_int64 gw_store_node_owner(sqlite3 *db, const char *name) {
+    sqlite3_stmt *statement = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT owner FROM nodes WHERE name=?", -1, &statement, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_text(statement, 1, name, -1, SQLITE_TRANSIENT);
+    int result = sqlite3_step(statement);
+    sqlite3_int64 owner = result == SQLITE_ROW ? sqlite3_column_int64(statement, 0) : result == SQLITE_DONE ? 0 : -1;
+    sqlite3_finalize(statement);
+    return owner;
 }
 int gw_store_resolve(sqlite3 *db, const char *device, char name[32]) {
     sqlite3_stmt *statement = NULL;
@@ -220,22 +241,23 @@ static int candidate(const char *hostname, int collision, char out[32]) {
     out[used] = 0;
     return 0;
 }
-int gw_store_claim(sqlite3 *db, const char *requested, const char *hostname,
-                   const char *device, int automatic, char assigned[32]) {
+int gw_store_claim_for(sqlite3 *db, sqlite3_int64 owner, const char *requested, const char *hostname,
+                       const char *device, int automatic, char assigned[32]) {
     if (!db || !hostname || strlen(hostname) > 255 ||
         (automatic ? !gw_device_valid(device) : !gw_node_valid(requested)))
         return -1;
     if (sql(db, "BEGIN IMMEDIATE"))
         return -1;
     sqlite3_stmt *statement = NULL;
-    const char *lookup = automatic ? "SELECT name FROM nodes WHERE device_id=?" :
-                                     "SELECT device_id FROM nodes WHERE name=?";
+    const char *lookup = automatic ? "SELECT name,owner FROM nodes WHERE device_id=?" :
+                                     "SELECT device_id,owner FROM nodes WHERE name=?";
     if (sqlite3_prepare_v2(db, lookup, -1, &statement, NULL) != SQLITE_OK)
         goto fail;
     sqlite3_bind_text(statement, 1, automatic ? device : requested, -1, SQLITE_TRANSIENT);
     int result = sqlite3_step(statement);
     if (result == SQLITE_ROW) {
-        if (!automatic && sqlite3_column_type(statement, 0) != SQLITE_NULL) {
+        if (sqlite3_column_int64(statement, 1) != owner ||
+            (!automatic && sqlite3_column_type(statement, 0) != SQLITE_NULL)) {
             sqlite3_finalize(statement);
             sql(db, "ROLLBACK");
             return 1;
@@ -258,9 +280,14 @@ int gw_store_claim(sqlite3 *db, const char *requested, const char *hostname,
                 goto fail;
         } else
             snprintf(assigned, 32, "%s", requested);
+        int alias = gw_store_alias_reserved(db, assigned);
+        if (alias < 0)
+            goto fail;
+        if (alias)
+            continue;
         char id[32];
         snprintf(id, sizeof(id), "%" PRIu64, gw_node_id(assigned));
-        if (sqlite3_prepare_v2(db, "INSERT INTO nodes(name,node_id,device_id,hostname,first_seen,last_seen) VALUES(?,?,?,?,?,?)",
+        if (sqlite3_prepare_v2(db, "INSERT INTO nodes(name,node_id,device_id,hostname,first_seen,last_seen,owner) VALUES(?,?,?,?,?,?,?)",
                               -1, &statement, NULL) != SQLITE_OK)
             goto fail;
         sqlite3_bind_text(statement, 1, assigned, -1, SQLITE_TRANSIENT);
@@ -272,6 +299,7 @@ int gw_store_claim(sqlite3 *db, const char *requested, const char *hostname,
         sqlite3_bind_text(statement, 4, hostname, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(statement, 5, (sqlite3_int64)time(NULL));
         sqlite3_bind_int64(statement, 6, (sqlite3_int64)time(NULL));
+        sqlite3_bind_int64(statement, 7, owner);
         result = sqlite3_step(statement);
         sqlite3_finalize(statement);
         statement = NULL;
@@ -290,6 +318,10 @@ fail:
     sql(db, "ROLLBACK");
     return -1;
 }
+int gw_store_claim(sqlite3 *db, const char *requested, const char *hostname,
+                   const char *device, int automatic, char assigned[32]) {
+    return gw_store_claim_for(db, 1, requested, hostname, device, automatic, assigned);
+}
 int gw_store_save(sqlite3 *db, const struct connection *node, int online) {
     sqlite3_stmt *statement = NULL;
     const char *text = "UPDATE nodes SET ip=?,ipv6=?,lanip=CASE WHEN ?<>'' THEN ? ELSE lanip END,"
@@ -297,7 +329,7 @@ int gw_store_save(sqlite3 *db, const struct connection *node, int online) {
                        "version=CASE WHEN ?<>'' THEN ? ELSE version END,"
                        "hostname=CASE WHEN ?<>'' THEN ? ELSE hostname END,nat=?,tcp_nat=?,tcp_nat_samples=?,tcp_nat_ips=?,"
                        "nat6=?,tcp_nat6=?,tcp_nat6_samples=?,tcp_nat6_ips=?,families=?,nat_level=?,tcp_level=?,bandwidth=?,last_seen=?,"
-                       "online=?,last_offline=CASE WHEN ?=0 THEN ? ELSE last_offline END WHERE name=?";
+                       "online=?,last_offline=CASE WHEN ?=0 THEN ? ELSE last_offline END,rename_supported=? WHERE name=?";
     if (sqlite3_prepare_v2(db, text, -1, &statement, NULL) != SQLITE_OK)
         return -1;
     int parameter = 1;
@@ -322,24 +354,32 @@ int gw_store_save(sqlite3 *db, const struct connection *node, int online) {
     sqlite3_bind_int(statement, parameter++,
                      node->families & (GW_FAMILY_V4 | GW_FAMILY_V6) ? (int)node->families : 1);
     /* 1..4 are the levels, 5 is "cone, filtering untestable", 0 unknown. */
-    sqlite3_bind_int(statement, parameter++, node->nat_level <= 5 ? (int)node->nat_level : 0);
+    sqlite3_bind_int(statement, parameter++, node->nat_level <= 7 ? (int)node->nat_level : 0);
     sqlite3_bind_int(statement, parameter++, node->tcp_level <= 4 ? (int)node->tcp_level : 0);
     sqlite3_bind_int(statement, parameter++, (int)node->bandwidth);
     sqlite3_bind_int64(statement, parameter++, (sqlite3_int64)(node->last_seen_wall / 1000000000));
     sqlite3_bind_int(statement, parameter++, online);
     sqlite3_bind_int(statement, parameter++, online);
     sqlite3_bind_int64(statement, parameter++, (sqlite3_int64)time(NULL));
+    sqlite3_bind_int(statement, parameter++, node->rename_supported);
     sqlite3_bind_text(statement, parameter++, node->node, -1, SQLITE_TRANSIENT);
     int ok = sqlite3_step(statement) == SQLITE_DONE && sqlite3_changes(db) == 1;
     sqlite3_finalize(statement);
     return ok ? 0 : -1;
 }
-int gw_store_count(sqlite3 *db, uint64_t *count) {
-    sqlite3_int64 value = 0;
-    if (scalar(db, "SELECT count(*) FROM nodes", &value))
+int gw_store_count_for(sqlite3 *db, sqlite3_int64 owner, uint64_t *count) {
+    sqlite3_stmt *statement = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT count(*) FROM nodes WHERE owner=?", -1, &statement, NULL) != SQLITE_OK)
         return -1;
-    *count = (uint64_t)value;
-    return 0;
+    sqlite3_bind_int64(statement, 1, owner);
+    int ok = sqlite3_step(statement) == SQLITE_ROW;
+    if (ok)
+        *count = (uint64_t)sqlite3_column_int64(statement, 0);
+    sqlite3_finalize(statement);
+    return ok ? 0 : -1;
+}
+int gw_store_count(sqlite3 *db, uint64_t *count) {
+    return gw_store_count_for(db, 1, count);
 }
 static void date(json_object *object, const char *key, sqlite3_int64 value) {
     char buffer[32] = "";
@@ -349,8 +389,8 @@ static void date(json_object *object, const char *key, sqlite3_int64 value) {
         strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc);
     gw_js(object, key, buffer);
 }
-static json_object *list_nodes(sqlite3 *db, const char *search, unsigned limit, unsigned offset,
-                               int exact) {
+json_object *gw_store_list_for(sqlite3 *db, sqlite3_int64 owner, const char *search,
+                               unsigned limit, unsigned offset, int exact) {
     if (!search || strlen(search) > 255 || !limit || limit > 256)
         return NULL;
     char pattern[514];
@@ -362,15 +402,16 @@ static json_object *list_nodes(sqlite3 *db, const char *search, unsigned limit, 
         pattern[used++] = *p;
     }
     pattern[used++] = '%'; pattern[used] = 0;
-    const char *where = exact ? " WHERE name = ?1" :
-        " WHERE name LIKE ?1 ESCAPE '\\' OR hostname LIKE ?1 ESCAPE '\\' OR ip LIKE ?1 ESCAPE '\\' OR ipv6 LIKE ?1 ESCAPE '\\' OR lanip LIKE ?1 ESCAPE '\\' OR os LIKE ?1 ESCAPE '\\'";
+    const char *where = exact ? " WHERE owner=?1 AND name=?2" :
+        " WHERE owner=?1 AND (name LIKE ?2 ESCAPE '\\' OR hostname LIKE ?2 ESCAPE '\\' OR ip LIKE ?2 ESCAPE '\\' OR ipv6 LIKE ?2 ESCAPE '\\' OR lanip LIKE ?2 ESCAPE '\\' OR os LIKE ?2 ESCAPE '\\')";
     const char *filter = exact ? search : pattern;
     char query[1024];
     sqlite3_stmt *statement = NULL;
     snprintf(query, sizeof(query), "SELECT count(*) FROM nodes%s", where);
     if (sqlite3_prepare_v2(db, query, -1, &statement, NULL) != SQLITE_OK)
         return NULL;
-    sqlite3_bind_text(statement, 1, filter, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(statement, 1, owner);
+    sqlite3_bind_text(statement, 2, filter, -1, SQLITE_TRANSIENT);
     if (sqlite3_step(statement) != SQLITE_ROW) {
         sqlite3_finalize(statement);
         return NULL;
@@ -378,12 +419,13 @@ static json_object *list_nodes(sqlite3 *db, const char *search, unsigned limit, 
     uint64_t total = (uint64_t)sqlite3_column_int64(statement, 0);
     sqlite3_finalize(statement);
     statement = NULL;
-    snprintf(query, sizeof(query), "SELECT name,node_id,hostname,ip,ipv6,lanip,mac,os,version,nat,bandwidth,first_seen,last_seen,last_offline,online,tcp_nat,tcp_nat_samples,tcp_nat_ips,nat6,tcp_nat6,tcp_nat6_samples,tcp_nat6_ips,families,nat_level,tcp_level FROM nodes%s ORDER BY online DESC,name LIMIT ?2 OFFSET ?3", where);
+    snprintf(query, sizeof(query), "SELECT name,node_id,hostname,ip,ipv6,lanip,mac,os,version,nat,bandwidth,first_seen,last_seen,last_offline,online,tcp_nat,tcp_nat_samples,tcp_nat_ips,nat6,tcp_nat6,tcp_nat6_samples,tcp_nat6_ips,families,nat_level,tcp_level,(rename_supported OR device_id IS NOT NULL) FROM nodes%s ORDER BY online DESC,name LIMIT ?3 OFFSET ?4", where);
     if (sqlite3_prepare_v2(db, query, -1, &statement, NULL) != SQLITE_OK)
         return NULL;
-    sqlite3_bind_text(statement, 1, filter, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(statement, 2, (int)limit);
-    sqlite3_bind_int64(statement, 3, (sqlite3_int64)offset);
+    sqlite3_bind_int64(statement, 1, owner);
+    sqlite3_bind_text(statement, 2, filter, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(statement, 3, (int)limit);
+    sqlite3_bind_int64(statement, 4, (sqlite3_int64)offset);
     json_object *root = json_object_new_object(), *nodes = json_object_new_array();
     json_object_object_add(root, "nodes", nodes);
     gw_ju(root, "total", total); gw_ju(root, "offset", offset); gw_ju(root, "limit", limit);
@@ -406,6 +448,7 @@ static json_object *list_nodes(sqlite3 *db, const char *search, unsigned limit, 
         gw_ju(node, "tcpNatDestinationIPs6", (uint64_t)sqlite3_column_int(statement, 21));
         gw_ju(node, "natLevel", (uint64_t)sqlite3_column_int(statement, 23));
         gw_ju(node, "tcpNatLevel", (uint64_t)sqlite3_column_int(statement, 24));
+        gw_ju(node, "renameSupported", (uint64_t)sqlite3_column_int(statement, 25));
         {
             int families = sqlite3_column_int(statement, 22);
             gw_ju(node, "families", (uint64_t)(families & (GW_FAMILY_V4 | GW_FAMILY_V6)
@@ -427,10 +470,10 @@ static json_object *list_nodes(sqlite3 *db, const char *search, unsigned limit, 
     return root;
 }
 json_object *gw_store_list(sqlite3 *db, const char *search, unsigned limit, unsigned offset) {
-    return list_nodes(db, search, limit, offset, 0);
+    return gw_store_list_for(db, 1, search, limit, offset, 0);
 }
 json_object *gw_store_list_exact(sqlite3 *db, const char *name) {
-    return list_nodes(db, name, 1, 0, 1);
+    return gw_store_list_for(db, 1, name, 1, 0, 1);
 }
 
 /* --- Persistent per-node rules -------------------------------------------

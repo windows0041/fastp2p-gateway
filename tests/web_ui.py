@@ -10,6 +10,7 @@ from contextlib import closing
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import socket
 import sqlite3
@@ -104,7 +105,8 @@ def main():
         wsl=['wsl.exe','--'] if args.wsl else []
         create_certificates(root/'certs','127.0.0.1',wsl=wsl)
         username='web-admin';password=secrets.token_urlsafe(24);token='9999999999999999'
-        env=os.environ.copy();env.update(FASTP2P_USER=username,FASTP2P_PASSWORD=password,FASTP2P_TOKEN=token)
+        env=os.environ.copy();env.pop('FASTP2P_ADMIN_EMAIL',None)
+        env.update(FASTP2P_USER=username,FASTP2P_PASSWORD=password,FASTP2P_TOKEN=token)
         if args.wsl:
             remote=subprocess.check_output([*wsl,'wslpath','-a',root.as_posix()],text=True).strip()
             (root/'launch.sh').write_text('#!/bin/bash\nset -e\necho $$ > "$1/gateway.pid"\nshift\nexec "$@"\n',newline='\n')
@@ -153,7 +155,7 @@ def main():
                 page.on('response',lambda response:mutations.append(response) if response.url.endswith('/app') else None)
                 response=page.goto('https://127.0.0.1:31008/');assert response.status==200
                 assert "script-src 'self'" in response.headers['content-security-policy']
-                expect(page.get_by_role('heading',name='欢迎回来')).to_be_visible()
+                expect(page.get_by_role('heading',name='登录控制台')).to_be_visible()
                 page.locator('#username').fill(username);page.locator('#password').fill('invalid')
                 page.locator('#login-submit').click();expect(page.locator('#login-error')).to_contain_text('不正确')
                 def login():
@@ -191,6 +193,7 @@ def main():
                 view('install');expect(page.locator('#install-token')).to_have_value(token)
                 page.reload();expect(page.locator('#install-token')).to_have_value(token)
                 assert page.locator('#install-token').get_attribute('type')=='password'
+                page.locator('.install-manual summary').click()
                 page.locator('#reveal-token').click();assert page.locator('#install-token').get_attribute('type')=='text'
                 view('devices');view('install')
                 assert page.locator('#install-token').get_attribute('type')=='password'
@@ -357,7 +360,8 @@ def main():
                 page.locator('#node-search').fill(c.name);expect(page.locator('#nodes tr')).to_have_count(1)
                 expect(page.get_by_role('button',name='删除离线节点 '+c.name,exact=True)).to_have_count(0)
                 results['offline_node_delete_confirmation_refresh_and_online_guard']=True
-                view('mine');expect(page.locator('#mine-account')).to_have_text(username)
+                admin_email='a16673997618@gmail.com'
+                view('mine');expect(page.locator('#mine-account')).to_have_text(admin_email)
                 page.locator('#mine-account-edit').click()
                 expect(page.locator('#account-user')).to_have_value(username)
                 page.locator('#account-user').fill('custom-web-admin')
@@ -369,8 +373,8 @@ def main():
                 expect(page.locator('#current-password')).to_have_value('');expect(page.locator('#new-password')).to_have_value('')
                 page.locator('#username').fill(username);page.locator('#password').fill(password);page.locator('#login-submit').click()
                 expect(page.locator('#login-error')).to_contain_text('不正确')
-                page.locator('#username').fill('custom-web-admin');page.locator('#password').fill(new_password);page.locator('#login-submit').click()
-                expect(page.locator('#mine-account')).to_have_text('custom-web-admin')
+                page.locator('#username').fill(admin_email.upper());page.locator('#password').fill(new_password);page.locator('#login-submit').click()
+                expect(page.locator('#mine-account')).to_have_text(admin_email)
                 expect(page.locator('#online-count')).to_have_text('1')
                 results['custom_account_current_password_and_sign_in_again']=True
                 # Exercise actual batch selection and the browser's distinction
@@ -396,6 +400,8 @@ def main():
                         db.execute("INSERT INTO release_packages SELECT ?,version,sha256,size,filename,uploaded_at FROM updates WHERE platform='windows'",('linux-'+arch,))
                 view('install');page.get_by_role('tab',name='Linux',exact=True).click()
                 page.locator('#refresh-updates').click()
+                expect(page.locator('#install-command')).to_have_value(re.compile(r"https://127\.0\.0\.1:37183/api/v1/install/bootstrap\?ticket=[a-f0-9]{48}"))
+                page.locator('.install-manual summary').click()
                 linux_button=page.locator('#install-list').get_by_role('button',name='下载 Linux 通用安装脚本',exact=True)
                 expect(linux_button).to_have_count(1)
                 expect(page.locator('#updates')).to_contain_text('Linux（自动识别架构）')
@@ -421,7 +427,7 @@ def main():
                 expect(page.locator('#install-list button')).to_have_count(1)
                 expect(page.locator('#updates')).to_contain_text('macOS（自动识别架构）')
                 expect(page.locator('#updates')).not_to_contain_text('macos-x86_64')
-                expect(page.locator('#install-note')).to_contain_text('无需 sudo')
+                expect(page.locator('#install-note')).to_contain_text('当前登录用户')
                 with page.expect_download() as downloading, page.expect_response(lambda r:'/api/v1/update/install?' in r.url) as installing:
                     macos_button.click()
                 assert installing.value.status==200 and installing.value.url.endswith('platform=macos')
@@ -466,8 +472,84 @@ def main():
                 view('install')
                 expect(page.locator('#upgrade-message')).to_contain_text(windows.name+'：已升级到 9.9.9',timeout=15000)
                 results['upgrade_pending_completion_and_skipped_architecture_visible']=True
+                if args.client:
+                    rule_path='/api/v1/device/'+windows.name
+                    def call(path, data=None):
+                        return page.evaluate('''async ({path, data}) => {
+                            const session=JSON.parse(sessionStorage.getItem('fastp2p.console'));
+                            const r=await fetch(path,{method: data ? 'POST' : 'GET',
+                                headers:{Authorization:'Bearer '+session.token,'Content-Type':'application/json'},
+                                body:data ? JSON.stringify(data) : undefined});
+                            return [r.status, await r.json().catch(() => null)];
+                        }''',{'path':path,'data':data})
+                    assert call(rule_path+'/app',{'appName':'目标改名测试','protocol':'tcp',
+                        'srcPort':25672,'dstHost':'127.0.0.1','dstPort':22,'peerNode':c.name})[0]==200
+                    view('devices');open_device(c.name)
+                    page.get_by_role('button',name='改名',exact=True).click()
+                    page.locator('#new-device-name').fill('short')
+                    page.locator('#save-rename').click()
+                    assert not page.locator('#new-device-name').evaluate('(field) => field.validity.valid')
+                    page.locator('#new-device-name').fill(windows.name)
+                    page.locator('#save-rename').click()
+                    expect(page.locator('#rename-error')).to_contain_text('已被占用')
+                    page.locator('#new-device-name').fill('web-c-renamed')
+                    page.locator('#save-rename').click()
+                    expect(page.locator('#rename-dialog')).to_be_hidden()
+                    expect(page.locator('#device-heading')).to_have_text('web-c-renamed')
+                    expect(page.locator('#device-fields')).to_contain_text('在线',timeout=15000)
+                    expect(page.locator('#rules')).to_contain_text('浏览器测试转发')
+                    assert call(rule_path+'/apps')[1]['Apps'][0]['peerNode']=='web-c-renamed'
+                    before=logins()
+                    view('devices')
+                    page.get_by_role('button',name='重启 web-c-renamed',exact=True).click()
+                    page.locator('#confirm-action').click()
+                    deadline=time.monotonic()+12
+                    while logins()<=before and client.poll() is None and time.monotonic()<deadline:
+                        time.sleep(.1)
+                    assert logins()>before and client.poll() is None
+                    page.locator('#refresh').click();open_device('web-c-renamed')
+                    expect(page.locator('#device-fields')).to_contain_text('在线')
+                    results['rename_validation_and_c_client_reconnect_with_rules']=True
                 page.locator('#side-logout').click();expect(page.locator('#login-screen')).to_be_visible()
                 expect(page.locator('#upgrade-message')).to_be_hidden()
+                page.locator('#register-toggle').click()
+                page.locator('#username').fill(admin_email)
+                page.locator('#password').fill(password)
+                page.locator('#login-submit').click()
+                expect(page.locator('#login-error')).to_contain_text('已注册')
+                page.locator('#username').fill('Test-Member@Example.com')
+                page.locator('#login-submit').click()
+                expect(page.locator('#console')).to_be_visible()
+                view('mine');expect(page.locator('#mine-account')).to_have_text('test-member@example.com')
+                member_token=page.locator('#mine-token').inner_text()
+                assert re.fullmatch(r'[1-9][0-9]{15}',member_token) and member_token!=token
+                view('devices');expect(page.locator('#nodes tr')).to_have_count(0)
+                member=Peer('web-member-node','fixture',member_token,root/'certs/ca.crt');peers.append(member)
+                page.locator('#refresh').click();expect(page.locator('#nodes tr')).to_have_count(1)
+                expect(page.locator('#nodes')).to_contain_text('web-member-node')
+                if args.client:
+                    assert call(rule_path+'/apps')[0]==404
+                    assert call('/api/v1/device/web-c-renamed/rename',{'name':'member-rename'})[0]==404
+                    assert call('/api/v1/releases/sync',{})[0]==403
+                view('install');page.get_by_role('tab',name='Windows',exact=True).click()
+                expect(page.locator('#sync-release')).to_be_hidden()
+                expect(page.locator('#upload-update')).to_be_hidden()
+                command=page.locator('#install-command')
+                expect(command).to_have_value(re.compile(r'curl\.exe -fsS -OJ'))
+                context.grant_permissions(['clipboard-read','clipboard-write'])
+                page.get_by_role('button',name='复制命令',exact=True).click()
+                assert page.evaluate('navigator.clipboard.readText()')==command.input_value()
+                assert member_token not in command.input_value()
+                url=re.search(r'https://[^\s\']+',command.input_value()).group()
+                ca=remote+'/certs/ca.crt' if args.wsl else str(root/'certs/ca.crt')
+                download_dir=root/'ticket-test';download_dir.mkdir()
+                curl=[*wsl,'curl','--cacert',ca]
+                path=remote+'/ticket-test' if args.wsl else str(download_dir)
+                subprocess.run([*curl,'--output-dir',path,'-fsS','-OJ',url],check=True)
+                assert (download_dir/f'fastp2p-windows-v9.9.9-{member_token}.exe').read_bytes()==b'MZ\x00\x00'
+                reused=subprocess.check_output([*curl,'-sS','-w','%{http_code}','-o','/dev/null',url],text=True)
+                assert reused=='403'
+                results['signup_account_scope_and_one_use_install_command']=True
                 assert not errors,errors
                 context.close();browser.close()
             assert all(peer.error is None for peer in peers)

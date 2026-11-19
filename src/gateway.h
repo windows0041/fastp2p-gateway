@@ -6,6 +6,7 @@
 #include <netinet/in.h>
 #include <stdio.h>
 #define GW_MAX_NODES 256
+#define GW_ADMIN_OWNER 1
 #define GW_MAX_PROBES 128
 #define GW_HTTP_LIMIT (64u * 1024u)
 /* An upgrade package may be tens of megabytes; cap it so a bad upload cannot
@@ -35,6 +36,7 @@ struct login_attempt {
     uint64_t locked_until;
     unsigned attempts, failures;
 };
+enum sign_in_scope { GW_SIGN_IN_ADMIN, GW_SIGN_IN_MEMBER, GW_SIGN_UP, GW_SIGN_IN_SCOPES };
 struct packet {
     struct packet *next;
     size_t length, offset;
@@ -42,9 +44,11 @@ struct packet {
 };
 struct connection {
     struct lws *wsi;
-    int slot, registered, closing, config_supported, restart_supported;
+    int slot, registered, closing, config_supported, restart_supported, rename_supported;
     char node[32], ip[64], ipv6[128], os[128], mac[128], lan[64], version[64];
     uint64_t id, last_rx, relay_time, active_wall;
+    sqlite3_int64 owner;
+    uint64_t install_token;
     uint64_t last_seen_wall, next_store;
     char hostname[256];
     /* families is the gateway-side view of DUALSTACK-SPEC §1: the observed WSS
@@ -74,6 +78,8 @@ struct connection {
     uint64_t upload_size;
     char upload_tmp[640], upload_platform[16], upload_version[32];
     uint64_t auth_generation;
+    char account_name[257];
+    unsigned char account_salt[16];
     unsigned char *request, *response;
     const char *response_type;
     size_t request_length, response_length, response_offset;
@@ -118,6 +124,7 @@ struct gateway {
     unsigned max_nodes, timeout, ws_port, api_port, run_seconds;
     char bind[64], api_bind[64], bind6[64], api_bind6[64];
     const char *cert, *key, *user, *password;
+    char admin_email[257];
     char secret[2048];
     struct gw_admin admin;
     uint64_t auth_generation;
@@ -130,7 +137,7 @@ struct gateway {
     char enrollment_ca[16385];
     /* Upgrade packages live next to the database so a backup covers both. */
     char update_dir[512];
-    struct login_attempt logins[GW_LOGIN_SLOTS];
+    struct login_attempt logins[GW_SIGN_IN_SCOPES][GW_LOGIN_SLOTS];
     struct nat_state nat;
 };
 /* bind6 may be NULL or empty: then no IPv6 probe sockets are created. */

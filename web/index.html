@@ -14,12 +14,12 @@
       <div class="story-footer"><span class="dot"></span> HTTPS / WSS · TCP / QUIC</div>
     </div>
     <div class="login-form-wrap"><form id="login-form" class="login-form">
-      <span class="eyebrow">网关控制台</span><h2>欢迎回来</h2><p class="muted">使用这台网关的管理账号登录。</p>
-      <label for="username">管理账号</label><input id="username" name="username" autocomplete="username" required maxlength="512" placeholder="输入管理账号">
-      <label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="512" placeholder="输入管理密码">
+      <span class="eyebrow">网关控制台</span><h2 id="login-title">登录控制台</h2><p id="login-description" class="muted">使用邮箱和密码登录。</p>
+      <label id="login-user-label" for="username">邮箱或已有账号</label><input id="username" name="username" autocomplete="username" required maxlength="512" placeholder="name@example.com">
+      <label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="512" placeholder="输入密码">
       <p id="login-error" class="form-error" role="alert" hidden></p>
       <button id="login-submit" class="button primary login-submit" type="submit">登录控制台 <span aria-hidden="true">→</span></button>
-      <p class="login-note">刷新此标签页会保留当前登录会话。</p>
+      <button id="register-toggle" class="button quiet auth-toggle" type="button">注册账号</button>
     </form><p class="login-bottom">FastP2P C Gateway · 自建网络管理</p></div>
   </section>
 
@@ -62,7 +62,7 @@
 </div>
 
 <div id="view-install" class="view" hidden>
-<section class="panel"><div class="panel-heading"><div><span class="eyebrow">INSTALL</span><h2>安装客户端</h2><p>选择平台下载；安装时输入下面的 16 位数字 Token。</p></div></div><div class="panel-body install-body"><label for="install-token">16 位数字 Token</label><input id="install-token" type="password" readonly autocomplete="off"><div class="dialog-actions install-actions"><button id="reveal-token" class="button" type="button">显示</button><button id="copy-token" class="button primary" type="button">复制 Token</button></div><div class="install-tabs" role="tablist" aria-label="客户端平台"><button type="button" class="install-tab active" data-platform="windows" role="tab" aria-selected="true">Windows</button><button type="button" class="install-tab" data-platform="macos" role="tab" aria-selected="false">Mac</button><button type="button" class="install-tab" data-platform="linux" role="tab" aria-selected="false">Linux</button><button type="button" class="install-tab" data-platform="android" role="tab" aria-selected="false">Android</button></div><div id="install-list" class="install-list"></div><p id="install-note" class="muted install-note"></p></div></section>
+<section class="panel"><div class="panel-heading"><div><span class="eyebrow">INSTALL</span><h2>安装客户端</h2><p>选择平台，复制命令到对应设备运行。</p></div></div><div class="panel-body install-body"><div class="install-tabs" role="tablist" aria-label="客户端平台"><button type="button" class="install-tab active" data-platform="windows" role="tab" aria-selected="true">Windows</button><button type="button" class="install-tab" data-platform="macos" role="tab" aria-selected="false">Mac</button><button type="button" class="install-tab" data-platform="linux" role="tab" aria-selected="false">Linux</button><button type="button" class="install-tab" data-platform="android" role="tab" aria-selected="false">Android</button></div><p id="install-note" class="muted install-note"></p><div id="install-commands" class="install-commands"></div><details class="install-manual"><summary>手动下载安装包</summary><div id="install-list" class="install-list"></div><label for="install-token">16 位数字 Token</label><input id="install-token" type="password" readonly autocomplete="off"><div class="dialog-actions install-actions"><button id="reveal-token" class="button" type="button">显示</button><button id="copy-token" class="button primary" type="button">复制 Token</button></div></details></div></section>
 <section class="panel updates-panel"><div class="panel-heading"><div><span class="eyebrow">CLIENT UPDATES</span><h2>客户端升级</h2><p>同步 GitHub 稳定版或上传安装包，然后选择下载或下发升级。</p></div><div class="rule-toolbar"><button id="sync-release" class="button" type="button">同步 GitHub 最新版</button><button id="refresh-updates" class="button" type="button">刷新</button><button id="upload-update" class="button" type="button">上传安装包</button><button id="upgrade-all" class="button primary" type="button">升级所有旧版本</button></div></div>
           <p id="sync-message" class="inline-message" role="status"></p>
           <p id="update-message" class="inline-message" role="status">尚无安装包。</p>
@@ -72,12 +72,20 @@
 </div>
 
 <div id="view-mine" class="view" hidden>
-<section class="panel"><div class="panel-heading"><div><span class="eyebrow">ACCOUNT</span><h2>我</h2><p>当前控制台账号与安装 Token。</p></div></div><div class="panel-body"><div class="mine-row"><span class="mine-label">管理账号</span><span id="mine-account" class="mono"></span></div><div class="mine-row"><span class="mine-label">安装 Token</span><span id="mine-token" class="mono"></span></div><div class="mine-row"><span class="mine-label">账号设置</span><button id="mine-account-edit" class="button" type="button">修改账号与密码</button></div></div></section>
+<section class="panel"><div class="panel-heading"><div><span class="eyebrow">ACCOUNT</span><h2>我</h2><p>当前控制台账号与安装 Token。</p></div></div><div class="panel-body"><div class="mine-row"><span class="mine-label">登录邮箱</span><span id="mine-account" class="mono"></span></div><div class="mine-row"><span class="mine-label">安装 Token</span><span id="mine-token" class="mono"></span></div><div class="mine-row"><span class="mine-label">账号设置</span><button id="mine-account-edit" class="button" type="button">修改账号与密码</button></div></div></section>
 </div>
 <footer class="main-footer"><span>FastP2P C Gateway</span><span>数据在客户端之间传输，网关负责连接协调。</span></footer>
       </main>
     </div>
   </div>
+  <dialog id="rename-dialog"><form id="rename-form">
+    <div class="dialog-heading"><h2>编辑设备名</h2></div>
+    <label for="new-device-name">新设备名</label>
+    <input id="new-device-name" required minlength="8" maxlength="31" pattern="[A-Za-z0-9_\-]{8,31}" autocomplete="off" aria-describedby="rename-help">
+    <p id="rename-help" class="muted form-help">8–31 个字母、数字、下划线或连字符。设备重新连接后使用新名称。</p>
+    <p id="rename-error" class="form-error" role="alert" hidden></p>
+    <div class="dialog-actions"><button id="cancel-rename" class="button" type="button">取消</button><button id="save-rename" class="button primary" type="submit">保存</button></div>
+  </form></dialog>
   <dialog id="update-dialog"><form id="update-form"><div class="dialog-heading"><div><span class="eyebrow">CLIENT UPDATE</span><h2>上传客户端安装包</h2></div><button id="close-update-dialog" class="icon-button" type="button" aria-label="关闭">×</button></div>
     <div class="form-grid"><div><label for="update-platform">平台</label><select id="update-platform"><option value="windows">Windows（.exe）</option><option value="linux">Linux</option><option value="android">Android（.apk）</option><option value="macos">macOS</option></select></div><div><label for="update-version">版本号</label><input id="update-version" maxlength="31" required placeholder="2.0.2"></div></div>
     <label for="update-file">安装包文件</label><input id="update-file" type="file" required>
