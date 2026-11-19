@@ -28,9 +28,12 @@ case "$(uname -m)" in
         ;;
     *) fail '暂不支持此 Mac 的 CPU 架构。' ;;
 esac
-token=$(printf '%s\n' "${0##*/}" | awk -F '[^0-9]+' '
+token=''
+if [ -z "$token" ]; then
+    token=$(printf '%s\n' "${0##*/}" | awk -F '[^0-9]+' '
     { for (i=1;i<=NF;i++) if (length($i)==16 && $i ~ /^[1-9][0-9]*$/) { n++; key=$i } }
     END { if(n==1) print key; else exit 1 }') || fail '文件名必须包含一个有效的 16 位 Token，请从控制台重新下载。'
+fi
 
 app=$HOME/Library/Application\ Support/fastp2p
 agents=$HOME/Library/LaunchAgents

@@ -385,14 +385,14 @@ def main():
                     const session=JSON.parse(sessionStorage.getItem('fastp2p.console'));
                     const statuses=[];
                     const mac = [207,250,237,254,12,0,0,1,0,0,0,0,2,0,0,0,...Array(16).fill(0)];
-                    for (const [platform,bytes] of [['windows',[77,90,0,0]],['macos',mac]]) {
+                    for (const [platform,bytes] of [['windows',[77,90,0,0]],['macos',mac],['android',[80,75,3,4]]]) {
                         const r=await fetch('/api/v1/update?platform='+platform+'&version=9.9.9', {
                             method:'PUT',headers:{Authorization:'Bearer '+session.token},body:new Uint8Array(bytes)});
                         statuses.push(r.status);
                     }
                     return statuses;
                 }''')
-                assert uploaded==[200,200],uploaded
+                assert uploaded==[200,200,200],uploaded
                 # Raw packages stay per architecture, while operators download
                 # exactly one small universal Linux script without choosing CPU.
                 with closing(sqlite3.connect(root/'nodes.sqlite3',timeout=5)) as db, db:
@@ -400,7 +400,18 @@ def main():
                         db.execute("INSERT INTO release_packages SELECT ?,version,sha256,size,filename,uploaded_at FROM updates WHERE platform='windows'",('linux-'+arch,))
                 view('install');page.get_by_role('tab',name='Linux',exact=True).click()
                 page.locator('#refresh-updates').click()
-                expect(page.locator('#install-command')).to_have_value(re.compile(r"https://127\.0\.0\.1:37183/api/v1/install/bootstrap\?ticket=[a-f0-9]{48}"))
+                def check_shell_command(downloader):
+                    command=page.locator('#install-command')
+                    ticket_pattern=r"https://127\.0\.0\.1:37183/api/v1/install/bootstrap\?ticket=[a-f0-9]{48}"
+                    expect(command).to_have_value(re.compile(re.escape(downloader)+r'.*'+ticket_pattern+r"' && sh "))
+                    value=command.input_value()
+                    assert token not in value
+                    url=re.search(ticket_pattern,value).group()
+                    response=page.request.get(url)
+                    assert response.status==200 and response.headers['cache-control']=='no-store'
+                    assert response.body().startswith(b'#!/bin/sh\n') and f"token='{token}'".encode() in response.body()
+                    assert page.request.get(url).status==403
+                check_shell_command('wget -qO')
                 page.locator('.install-manual summary').click()
                 linux_button=page.locator('#install-list').get_by_role('button',name='下载 Linux 通用安装脚本',exact=True)
                 expect(linux_button).to_have_count(1)
@@ -423,6 +434,7 @@ def main():
                     db.execute("INSERT INTO release_packages SELECT 'macos-x86_64',version,sha256,size,filename,uploaded_at FROM updates WHERE platform='macos'")
                 page.get_by_role('tab',name='Mac',exact=True).click()
                 page.locator('#refresh-updates').click()
+                check_shell_command('curl -fsS -o')
                 macos_button=page.locator('#install-list').get_by_role('button',name='下载 macOS 通用安装脚本',exact=True)
                 expect(page.locator('#install-list button')).to_have_count(1)
                 expect(page.locator('#updates')).to_contain_text('macOS（自动识别架构）')
@@ -448,6 +460,13 @@ def main():
                 }''')
                 assert raw==[[200,207],[200,207]],raw
                 results['one_macos_script_with_both_architectures_and_raw_package_compatibility']=True
+                page.get_by_role('tab',name='Android',exact=True).click()
+                expect(page.locator('#install-command')).to_have_count(0)
+                expect(page.get_by_role('link',name='打开 FastP2P 并接入')).to_have_attribute('href','fastp2p://install?token='+token)
+                with page.expect_download() as apk:
+                    page.get_by_role('button',name='下载 APK',exact=True).click()
+                assert apk.value.suggested_filename==f'fastp2p-android-v9.9.9-{token}.apk'
+                results['android_installs_manually_from_phone']=True
                 with closing(sqlite3.connect(root/'nodes.sqlite3',timeout=5)) as db, db:
                     db.execute("INSERT INTO release_packages SELECT 'macos-arm64',version,sha256,size,filename,uploaded_at FROM updates WHERE platform='macos'")
                     db.execute("DELETE FROM updates WHERE platform='macos'")

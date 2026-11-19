@@ -119,7 +119,7 @@ class MacInstaller(unittest.TestCase):
                         PATH=str(self.tools)+os.pathsep+os.environ['PATH'],
                         CPU='x86_64', APPLE_SILICON='0')
 
-    def run_installer(self, arches=('arm64', 'x86_64'), **env):
+    def run_installer(self, arches=('arm64', 'x86_64'), ticket=False, **env):
         manifest = ["gateway_url='https://gateway.example:27183'", 'download_ca=1', 'case "$arch" in']
         for arch in arches:
             platform = 'macos-' + arch
@@ -133,9 +133,11 @@ class MacInstaller(unittest.TestCase):
             """cat > "$work/gateway-ca.pem" <<'CA_EOF'""", PRESET['ca'], 'CA_EOF',
             """cat > "$work/gateway.json" <<'JSON_EOF'""", json.dumps(PRESET), 'JSON_EOF',
         ])
-        script = self.root / ('fastp2p-macos-' + TOKEN + '.sh')
-        script.write_text(TEMPLATE.read_text(encoding='utf-8').replace('@@FASTP2P_DOWNLOAD@@', '\n'.join(manifest)),
-                          encoding='utf-8')
+        script = self.root / ('install.sh' if ticket else 'fastp2p-macos-' + TOKEN + '.sh')
+        body = TEMPLATE.read_text(encoding='utf-8').replace('@@FASTP2P_DOWNLOAD@@', '\n'.join(manifest))
+        if ticket:
+            body = body.replace("token=''\n", f"token='{TOKEN}'\n", 1)
+        script.write_text(body, encoding='utf-8')
         return subprocess.run(['sh', str(script)], env=dict(self.env, **env),
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
 
@@ -151,7 +153,7 @@ class MacInstaller(unittest.TestCase):
         return binary, profile, self.plist
 
     def test_intel_and_login_startup(self):
-        result = self.run_installer()
+        result = self.run_installer(ticket=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.root / 'downloaded').read_text(), 'macos-x86_64')
         self.assertTrue((self.root / 'loaded').exists())

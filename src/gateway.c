@@ -1600,6 +1600,20 @@ static void handle_http(struct connection *c) {
                 http_error(c,503,1,"cannot prepare package manifest; retry after synchronization");return;
             }
             if(!count){http_error(c,404,1,"no supported packages found for this platform");return;}
+            if(ticket){
+                char *body=NULL;size_t length=0;
+                if(gw_render_installer(script,g.public_host,g.ws_port,g.enrollment_ca,packages,count,
+                                       installer_token,&body,&length)){
+                    http_error(c,503,1,"cannot prepare installer; retry after synchronization");
+                    return;
+                }
+                c->response_type="application/octet-stream";
+                http_reply(c,200,body,length);
+                OPENSSL_cleanse(body,length);
+                free(body);
+                if(c->handled)ticket->expires=0;
+                return;
+            }
             char generated[700],headers[256];
             if(gw_build_installer(script,g.update_dir,g.public_host,g.ws_port,g.enrollment_ca,packages,count,generated)){
                 http_error(c,503,1,"cannot prepare installer; retry after synchronization");return;
@@ -1610,8 +1624,6 @@ static void handle_http(struct connection *c) {
                 snprintf(headers,sizeof(headers),"Content-Disposition: attachment; filename=\"fastp2p-%" PRIu64 "\"\r\nCache-Control: no-store\r\n",installer_token);
             if(lws_serve_http_file(c->wsi,generated,"application/octet-stream",headers,(int)strlen(headers))<0)
                 http_error(c,503,1,"cannot serve installer");
-            else if (ticket)
-                ticket->expires = 0;
             return;
         }
         if(!has_version){http_error(c,400,1,"version is required");return;}

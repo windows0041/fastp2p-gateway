@@ -114,9 +114,9 @@ static int cached_valid(const char *path,const char *script,size_t length) {
     }
     close(fd);return ok;
 }
-int gw_build_installer(const struct gw_installer *installer,const char *directory,
-                       const char *host,unsigned port,const char *ca,
-                       const struct gw_install_package *packages,size_t count,char path[700]) {
+int gw_render_installer(const struct gw_installer *installer, const char *host,
+                        unsigned port, const char *ca, const struct gw_install_package *packages,
+                        size_t count, uint64_t token, char **script, size_t *length) {
     /* A public host may be an IPv6 literal; the URL needs it bracketed. */
     char authority[300];
     gw_host_url_authority(authority,sizeof(authority),host);
@@ -124,12 +124,20 @@ int gw_build_installer(const struct gw_installer *installer,const char *director
        strstr(ca,"FASTP2P_DOWNLOAD_CA_EOF") || !count || count>installer->count)return -1;
     for(size_t i=0;i<count;i++)if(!package_valid(installer,packages+i))return -1;
     const char controller[]="@@FASTP2P_CONTROLLER@@\n",download[]="@@FASTP2P_DOWNLOAD@@\n";
+    const char token_marker[]="token=''\n";
+    const char *token_at=strstr(installer->script,token_marker);
     const char *download_at=strstr(installer->script,download);
     const char *controller_at=installer->controller?strstr(installer->script,controller):NULL;
-    if(!download_at || (installer->controller && (!controller_at || controller_at<download_at)))return -1;
-    char *script=NULL;size_t length=0;
-    FILE *memory=open_memstream(&script,&length);if(!memory)return -1;
-    fwrite(installer->script,1,(size_t)(download_at-installer->script),memory);
+    if(!token_at || !download_at || token_at>=download_at ||
+       (installer->controller && (!controller_at || controller_at<download_at)))return -1;
+    FILE *memory=open_memstream(script,length);if(!memory)return -1;
+    const char *start=installer->script;
+    if(token){
+        fwrite(start,1,(size_t)(token_at-start),memory);
+        fprintf(memory,"token='%" PRIu64 "'\n",token);
+        start=token_at+sizeof(token_marker)-1;
+    }
+    fwrite(start,1,(size_t)(download_at-start),memory);
     fprintf(memory,"gateway_url='https://%s:%u'\ndownload_ca=%u\ncase \"$arch\" in\n",authority,port,*ca?1:0);
     for(size_t i=0;i<count;i++){
         const struct gw_install_package *p=packages+i;
@@ -157,7 +165,14 @@ int gw_build_installer(const struct gw_installer *installer,const char *director
         json_object_put(preset);
         fputs(after_download,memory);
     }
-    if(fclose(memory)){free(script);return -1;}
+    if(fclose(memory)){free(*script);return -1;}
+    return 0;
+}
+int gw_build_installer(const struct gw_installer *installer,const char *directory,
+                       const char *host,unsigned port,const char *ca,
+                       const struct gw_install_package *packages,size_t count,char path[700]) {
+    char *script=NULL;size_t length=0;
+    if(gw_render_installer(installer,host,port,ca,packages,count,0,&script,&length))return -1;
     unsigned char digest[32];unsigned bytes=0;char template_sha[65];
     if(!EVP_Digest(script,length,digest,&bytes,EVP_sha256(),NULL) || bytes!=32){free(script);return -1;}
     for(unsigned i=0;i<32;i++)snprintf(template_sha+2*i,3,"%02x",digest[i]);

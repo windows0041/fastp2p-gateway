@@ -86,9 +86,9 @@ docker build -t fastp2p-gateway:local .
 
 同步 GitHub 最新稳定客户端成功后，清理较低版本的镜像包和手动上传包，保留相同或更高版本。正在下载或已下发升级的版本暂缓清理，后台每分钟重试过期租约和删除失败项。同步失败时保留现有包。
 
-登录后打开「安装客户端」，选择平台并点击「复制命令」。Windows 在 PowerShell 运行，Linux 在 shell 运行，Mac 在当前登录用户的终端运行。Android 可通过电脑上的 `adb` 安装，也可在手机上展开「手动下载安装包」，安装后点击「在手机上打开 FastP2P 并接入」。命令使用 10 分钟有效的一次性 HTTPS 链接，可在安装页重新生成。设备必须信任网关的 HTTPS 证书。
+登录后打开「安装客户端」。Windows 在 PowerShell 运行复制的命令，按提示确认管理员权限。Linux 命令用 `wget` 下载脚本并执行，Mac 命令用 `curl`，在当前登录用户的终端执行。每条命令使用 10 分钟内有效的一次性 HTTPS 链接，可在安装页重新生成。Android 用户在手机上点「下载 APK」，安装后回到此页点「打开 FastP2P 并接入」。
 
-Linux 提供通用 shell 安装脚本 `GET /api/v1/update/install?platform=linux`。脚本包含各架构最新可用包的版本、长度、SHA-256、网关地址、公开 CA 和独立系统服务脚本，不包含 ELF；执行时自动识别 CPU，从网关的公开 WSS 端口通过 HTTPS 下载原始程序。设备需要 curl 或启用 TLS 的 GNU wget。Token 只放在 16 位数字的下载文件名中，不进入共享缓存；下载器用私有配置文件传递 `Authorization: FastP2P <Token>`，不泄露到 URL 或下载器参数。下载端点保留旧客户端的 query Token 兼容，只允许获取程序，不授予管理权限。客户端远程升级接口仍提供原始可执行文件，按架构存储的包不受 UI 合并影响。旧的指定架构、版本的安装 URL 仍可使用，返回包含该版本各架构清单的通用脚本。已清理旧包时需重新下载脚本。修改安装脚本后须重新构建网关（Docker 构建上下文使用仓库根目录）。
+Linux 提供通用 shell 安装脚本 `GET /api/v1/update/install?platform=linux`。脚本含有可用包的版本、长度、SHA-256、网关地址、公开 CA 和服务脚本，执行时自动识别 CPU，通过网关的公开 WSS 端口下载对应程序。下载程序需要 curl 或启用 TLS 的 GNU wget。MIPS 用户空间检测使用 `dd`。一次性链接下载的 Linux 和 Mac 脚本在响应中携带本账号的 Token，命令用私有临时文件保存脚本，运行结束后清理。手动下载的脚本仍从文件名取 Token，共享缓存不保存 Token。下载器用私有配置文件传递 `Authorization: FastP2P <Token>`，下载端点保留旧客户端的 query Token 兼容。客户端远程升级接口仍提供原始可执行文件。已清理旧包时需重新下载脚本。修改安装脚本后须重新构建网关（Docker 构建上下文使用仓库根目录）。
 
 专用客户端包通过 [客户端仓库的 `common/bootstrap.json`](https://github.com/windows0041/fastp2p/blob/main/common/bootstrap.json) 预置网关地址和公开 CA，用户只需输入 16 位数字 Token。更换服务器 CA 或地址后需要重新构建专用客户端。
 

@@ -16,6 +16,10 @@ struct gw_install_package {
     char platform[16],version[32],sha[65];
     uint64_t size;
 };
+/* Ticket downloads include the account token in memory and are never cached. */
+int gw_render_installer(const struct gw_installer *installer, const char *host,
+                        unsigned port, const char *ca, const struct gw_install_package *packages,
+                        size_t count, uint64_t token, char **script, size_t *length);
 /* Immutable token-free downloader; the selected executables remain on the gateway. */
 int gw_build_installer(const struct gw_installer *installer, const char *directory,
                        const char *host, unsigned port, const char *ca,

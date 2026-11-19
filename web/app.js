@@ -419,7 +419,7 @@
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      if (update.platform === 'android') text('update-message', '安装 APK 后，打开客户端并输入安装 Token。');
+      if (update.platform === 'android') text('update-message', '安装 APK 后，请在手机浏览器点「打开 FastP2P 并接入」。');
       else if (update.platform.startsWith('linux')) text('update-message', '执行 sh ' + filename[1] + '（也可用 bash）。脚本自动识别 CPU，从本网关下载对应程序，保留节点身份与配置，安装到 /usr/local/fastp2p 并设置开机启动。需要 curl 或 GNU wget，请勿修改文件名中的 Token。');
       else if (update.platform === 'macos') text('update-message', '在 Mac 的终端执行 sh ' + filename[1] + '。脚本会自动选择 Apple Silicon 或 Intel 版本，保留节点身份和配置，并设置当前用户登录后启动。请保留文件名，无需 sudo。');
     } catch (error) {
@@ -694,20 +694,15 @@
   function installCommand(platform, url) {
     if (!/^https:\/\/(?:[A-Za-z0-9_.-]+|\[[0-9A-Fa-f:.]+\]):\d+\/api\/v1\/install\/bootstrap\?ticket=[a-f0-9]{48}$/.test(url))
       throw new Error('网关返回的安装链接无效。');
-    if (platform === 'windows') return [
-      "$d = Join-Path ([IO.Path]::GetTempPath()) ('fastp2p-' + [guid]::NewGuid()); New-Item -ItemType Directory -Path $d -ErrorAction Stop | Out-Null; Push-Location -LiteralPath $d;",
-      `try { curl.exe -fsS -OJ --proto '=https' '${url}'; if ($LASTEXITCODE) { throw 'FastP2P download failed' };`,
-      "$exe = @(Get-ChildItem -LiteralPath $d -File -Filter 'fastp2p-*.exe'); if ($exe.Count -ne 1) { throw 'FastP2P installer missing' };",
-      "if ((Start-Process -FilePath $exe[0].FullName -Verb RunAs -Wait -PassThru).ExitCode) { throw 'FastP2P installation failed' }",
-      '} finally { Pop-Location; Get-ChildItem -LiteralPath $d -File | Remove-Item -Force; Remove-Item -LiteralPath $d }'
-    ].join(' ');
-    const run = platform === 'android'
-      ? 'key=${1##*-}; key=${key%.apk}; adb install -r "$1" && adb shell am start -a android.intent.action.VIEW -d "fastp2p://install?token=$key" -p top.fastp2p.cclient'
-      : 'sh "$1"';
+    if (platform === 'linux' || platform === 'macos') {
+      const download = platform === 'linux' ? 'wget -qO' : 'curl -fsS -o';
+      return `(s=$(mktemp /tmp/fastp2p.XXXXXX) && trap 'rm -f "$s"' 0 && ${download} "$s" '${url}' && sh "$s")`;
+    }
     return [
-      "(set -eu; umask 077; d=$(mktemp -d); trap 'rm -rf -- \"$d\"' 0; cd \"$d\";",
-      `if command -v curl >/dev/null 2>&1; then curl -fsS -OJ --proto '=https' '${url}'; else wget -q --content-disposition '${url}'; fi;`,
-      `set -- ./fastp2p-*; test "$#" -eq 1; test -f "$1"; ${run})`
+      '& { $d=(New-Item -ItemType Directory -Path (Join-Path $env:TEMP ([guid]::NewGuid())) -ErrorAction Stop).FullName; Push-Location -LiteralPath $d -ErrorAction Stop;',
+      `try { $f=curl.exe -fsS -OJ -w '%{filename_effective}' '${url}'; if ($LASTEXITCODE) { throw 'Download failed' };`,
+      'if ((Start-Process ".\\$f" -Verb RunAs -Wait -PassThru).ExitCode) { throw "Installation failed" }',
+      "} finally { Pop-Location; Get-ChildItem -LiteralPath $d -File -Filter 'fastp2p-*.exe' | Remove-Item -Force; Remove-Item -LiteralPath $d } }"
     ].join(' ');
   }
   function renderInstallCommand(platform, wanted) {
@@ -722,6 +717,17 @@
       section.replaceChildren(element('p', 'muted', '暂无该平台的安装包。'));
       return;
     }
+    if (platform === 'android') {
+      const download = element('button', 'button primary', '下载 APK');
+      download.type = 'button';
+      download.addEventListener('click', () => downloadInstaller(latest, download));
+      const open = element('a', 'link-button', '打开 FastP2P 并接入');
+      open.href = 'fastp2p://install?token=' + encodeURIComponent(state.installToken);
+      const actions = element('div', 'install-command-actions');
+      actions.append(download, open);
+      section.replaceChildren(actions);
+      return;
+    }
     const label = element('label', '', '安装命令');
     label.htmlFor = 'install-command';
     const command = element('textarea', 'mono');
@@ -734,11 +740,6 @@
     const status = element('p', 'muted'); status.setAttribute('role', 'status');
     const actions = element('div', 'install-command-actions'); actions.append(renew, status);
     section.replaceChildren(label, row, actions);
-    if (platform === 'android') {
-      const open = element('a', 'link-button', '已安装 APK，在手机上打开 FastP2P 并接入');
-      open.href = 'fastp2p://install?token=' + encodeURIComponent(state.installToken);
-      section.append(open);
-    }
     let expiresAt = 0;
     async function generate() {
       command.value = ''; copy.disabled = renew.disabled = true; status.textContent = '正在生成安装命令…';
@@ -768,13 +769,15 @@
     const notes = {
       windows: '在 PowerShell 中运行，按提示确认管理员权限。',
       macos: '在 macOS 13 或更新版本的终端中，用当前登录用户运行。',
-      linux: '在 Linux 终端中运行，按提示使用 sudo。脚本会识别 CPU 架构并安装服务。',
-      android: '连接已启用 USB 调试的手机，在电脑上有 adb 的 shell 中运行。也可在手机上手动下载 APK 并确认安装。'
+      linux: '在有 wget 的 Linux 终端中运行，按提示使用 sudo。脚本会识别 CPU 架构并安装服务。',
+      android: '在手机上下载并安装 APK，然后回到此页点「打开 FastP2P 并接入」。'
     };
     text('install-note', notes[platform]);
+    list.closest('details').hidden = platform === 'android';
     const wanted = availableDownloads().filter(update =>
       update.platform === platform || update.platform.startsWith(platform + '-'));
     renderInstallCommand(platform, wanted);
+    if (platform === 'android') return;
     if (!wanted.length) {
       list.replaceChildren(element('p', 'muted install-empty',
         '暂无该平台的安装包。'));
