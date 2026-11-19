@@ -400,7 +400,7 @@ install_service() {
     }
     phase=停止旧服务
     transaction=true
-    printf '%s\n' "服务管理方式：$manager；正在探测并卸载旧服务，保留配置。"
+    printf '服务管理方式：%s；正在探测并卸载旧服务，保留配置。\n' "$manager"
     remove_service
     phase=准备安装与配置目录
     group=$(id -gn fastp2p)
@@ -472,7 +472,7 @@ case "${1:-}" in
                 /^DISTRIB_RELEASE=/ {gsub(/[^A-Za-z0-9_.-]/,"",$2); version=$2}
                 END {printf "%s%s%s", id?id:"OpenWrt", version?" ":"", version}
             ' /etc/openwrt_release)
-            printf '%s\n' "检测到系统：$distribution（procd）"
+            printf '检测到系统：%s（procd）\n' "$distribution"
         else
             printf '%s\n' "检测到服务管理器：$manager"
         fi ;;

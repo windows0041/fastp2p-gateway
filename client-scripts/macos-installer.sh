@@ -111,7 +111,7 @@ trap 'exit 143' TERM
 @@FASTP2P_DOWNLOAD@@
 launchctl print "$domain" >/dev/null 2>&1 || fail '请登录 macOS 桌面，在终端中运行此脚本。'
 url=$gateway_url/api/v1/update/download?platform=$package_platform\&version=$expected_version
-printf '%s\n' "正在下载 $arch 客户端 $expected_version…"
+printf '正在下载 %s 客户端 %s…\n' "$arch" "$expected_version"
 printf 'header = "Authorization: FastP2P %s"\n' "$token" > "$work/download.conf"
 if [ "$download_ca" -eq 1 ]; then
     printf 'cacert = "%s"\n' "$work/gateway-ca.pem" >> "$work/download.conf"
@@ -129,7 +129,7 @@ case "$version" in "fastp2p $expected_version ABI "*) ;; *) fail '安装包版�
 
 [ ! -L "$app" ] && [ ! -L "$agents" ] || fail '配置或登录启动项目录不能是符号链接。'
 mkdir -p "$app"
-mkdir "$lock" 2>/dev/null || fail "已有安装正在进行，请检查 $lock。"
+mkdir "$lock" 2>/dev/null || fail "已有安装正在进行，请检查 ${lock}。"
 locked=true
 mkdir "$work/previous"
 [ ! -L "$plist" ] || fail '登录启动项不能是符号链接。'

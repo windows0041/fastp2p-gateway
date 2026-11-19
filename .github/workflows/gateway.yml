@@ -31,6 +31,18 @@ jobs:
         run: |
           ./build/fastp2p-gateway --version
           test -s build/web_assets.h
+  macos-installer:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Installer flow with the macOS system shell
+        env:
+          LC_ALL: en_US.UTF-8
+        run: python3 tests/test_macos_installer.py
   static:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -94,7 +106,7 @@ jobs:
         if: always()
         run: docker rm -f gateway-test || true
   release:
-    needs: [static, docker]
+    needs: [static, docker, macos-installer]
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/fastp2p-gateway-v')
     runs-on: ubuntu-24.04
     permissions:

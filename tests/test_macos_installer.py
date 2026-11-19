@@ -138,7 +138,7 @@ class MacInstaller(unittest.TestCase):
         if ticket:
             body = body.replace("token=''\n", f"token='{TOKEN}'\n", 1)
         script.write_text(body, encoding='utf-8')
-        return subprocess.run(['sh', str(script)], env=dict(self.env, **env),
+        return subprocess.run(['/bin/sh', str(script)], env=dict(self.env, **env),
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
 
     def seed_install(self):
