@@ -197,6 +197,7 @@ try:
                   extra='&nattype=1&families=3&ipv6=2001%3Adb8%3A%3A1&tcpnattype=2')
         dual.report({'os': 'linux-c', 'version': '2.0.0', 'hasIPv4': 1, 'hasIPv6': 1,
                      'IPv4': '198.51.100.22', 'IPv6': '2001:db8::1', 'families': 3,
+                     'publicIPPort': 8234,
                      'udpNatType': 2, 'tcpNatType': 1, 'tcpNatSamples': 3,
                      'tcpNatDestinationIPs': 3,
                      'udpNatType6': 4, 'tcpNatType6': 2, 'tcpNatSamples6': 5,
@@ -204,6 +205,10 @@ try:
         row = wait(lambda: next((n for n in nodes() if n['name'] == 'dual-stack-node'
                                  and n.get('isActive')), None))
         assert row['ip'] == '127.0.0.1' and row['ipv6'] == '2001:db8::1'
+        assert row['publicIPPort'] == 8234, row
+        live = next(n for n in api('/api/v1/devices', jwt=jwt)[1]['nodes']
+                    if n['name'] == 'dual-stack-node')
+        assert live['publicIPPort'] == 8234, live
         assert int(row['families']) == 3, row
         assert (row['udpNatType'], row['tcpNatType']) == (2, 1)
         assert (row['udpNatType6'], row['tcpNatType6']) == (4, 2)
@@ -226,6 +231,7 @@ try:
                                  and n.get('tcpNatSamples6') == 6
                                  and n.get('tcpNatDestinationIPs6') == 4), None))
         assert row['ipv6'] == '2001:db8::9', row
+        assert row['publicIPPort'] == 8234, row
         results['per_family_levels_update_over_6_9'] = True
 
         # Peer queries answer with the v6 fields and the family bitmap (SPEC §4).

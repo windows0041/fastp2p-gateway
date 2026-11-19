@@ -756,6 +756,7 @@ static json_object *devices(sqlite3_int64 owner) {
         gw_js(j, "name", n->node);
         gw_js(j, "ip", n->ip[0] ? n->ip : n->probed_ipv4);
         gw_js(j, "ipv6", n->ipv6);
+        gw_ju(j, "publicIPPort", n->public_port);
         snprintf(number, sizeof(number), "%u", n->nat);
         gw_js(j, "natType", number);
         gw_ju(j, "udpNatType", n->nat);
