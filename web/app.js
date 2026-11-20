@@ -288,7 +288,12 @@
       const row = element('tr'), name = element('td');
       name.append(element('span', 'node-title', app.appName || '未命名规则'));
       if (app.error) name.append(element('span', 'node-subtitle', app.error)); row.append(name);
-      const source = element('td'); source.append(element('span', 'badge protocol', String(app.protocol || '').toUpperCase()), document.createTextNode(' :' + app.srcPort)); row.append(source);
+      const source = element('td');
+      const listenAddress = typeof app.whitelist === 'string' && app.whitelist ? app.whitelist : '127.0.0.1';
+      const listenHost = listenAddress.includes(':') ? `[${listenAddress}]` : listenAddress;
+      source.append(element('span', 'badge protocol', String(app.protocol || '').toUpperCase()),
+        document.createTextNode(` ${listenHost}:${app.srcPort}`));
+      row.append(source);
       const destination = element('td', 'rule-destination'); destination.append(element('span', '', app.peerNode || '—'),
         element('small', 'mono', app.protocol === 'socks5' ? '动态目标 · SOCKS5' : `${app.dstHost || '—'}:${app.dstPort || '—'}`)); row.append(destination);
       const status = element('td'), enabled = app.enabled === undefined || Number(app.enabled) === 1;
@@ -497,7 +502,7 @@
     $('rule-source').value = app?.srcPort || ''; $('rule-peer').value = app?.peerNode || '';
     $('rule-destination').value = app?.dstHost || '127.0.0.1'; $('rule-target').value = app?.dstPort || '';
     $('rule-transport').value = app && (Number(app.punchPriority) & 2) ? 'tcp' : 'quic';
-    $('rule-whitelist').value = app ? app.whitelist || '' : '127.0.0.1';
+    $('rule-listen-address').value = app?.whitelist || '127.0.0.1';
     if (app && app.protocol === 'socks5') {
       // The gateway never returns a stored password; show the username and let a
       // blank password mean "keep the existing one".
@@ -507,7 +512,7 @@
     } else {
       $('rule-socks-password').placeholder = '留空 = 不启用认证';
     }
-    $('whitelist-field').hidden = !state.selected.capabilities?.editForward;
+    $('listen-address-field').hidden = !state.selected.capabilities?.editForward;
     text('rule-help', state.selected.capabilities?.editForward
       ? '规则保存在网关数据库中，节点在线时立即生效，离线时在下次连接后生效。'
       : '规则保存在网关数据库中，节点下次连接后生效。');
@@ -628,7 +633,7 @@
         throw new Error('名称、目标地址或用户名过长，请缩短后重试。');
       if (state.apps.some(a => a !== old && a.protocol === app.protocol && Number(a.srcPort) === app.srcPort))
         throw new Error('此应用协议和入口端口已被使用。');
-      if (node.capabilities?.editForward) app.whitelist = $('rule-whitelist').value.trim();
+      if (node.capabilities?.editForward) app.whitelist = $('rule-listen-address').value.trim();
       if (old) { app.protocol0 = old.protocol; app.srcPort0 = old.srcPort; }
       await api('/api/v1/device/' + encodeURIComponent(node.name) + '/app', app);
       $('rule-dialog').close(); message('指令已发送到客户端，正在刷新规则。');

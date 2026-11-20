@@ -339,11 +339,17 @@ try:
 
         # Configuration comes from SQLite; the authenticated node supplies link status.
         assert live_rules([])==[]
-        assert api('/api/v1/device/'+a.name+'/app',{'appName':'new','protocol':'tcp','srcPort':12345,'peerNode':b.name,'dstHost':'127.0.0.1','dstPort':22},jwt)[0]==200
-        assert json.loads(a.until(3,9))['appName']=='new'
+        app_path='/api/v1/device/'+a.name+'/app'
+        lan_rule={'appName':'new','protocol':'tcp','srcPort':12345,'peerNode':b.name,
+                  'dstHost':'192.168.15.1','dstPort':22,'whitelist':'192.168.50.1'}
+        assert api(app_path,lan_rule,jwt)[0]==200
+        pushed=json.loads(a.until(3,9))
+        assert pushed['appName']=='new' and pushed['whitelist']=='192.168.50.1'
+        assert api(app_path,{**lan_rule,'protocol0':'tcp','srcPort0':12345,'whitelist':'192.168.50.0/24'},jwt)[0]==400
         report={'protocol':'tcp','srcPort':12345,'peerNode':b.name,'linkMode':'tcppunch'}
         rule,=live_rules([{**report,'isActive':0,'linkReady':0}])
-        assert rule['appName']=='new' and rule['linkStatus']=='waiting' and not rule['isActive'] and 'linkMode' not in rule
+        assert rule['appName']=='new' and rule['whitelist']=='192.168.50.1'
+        assert rule['linkStatus']=='waiting' and not rule['isActive'] and 'linkMode' not in rule
         rule,=live_rules([{**report,'isActive':1}])
         assert rule['linkStatus']=='unknown' and not rule['isActive']
         rule,=live_rules([{**report,'isActive':1,'linkReady':1,'peerNode':r.name}])

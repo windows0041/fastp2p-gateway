@@ -98,10 +98,15 @@ with tempfile.TemporaryDirectory(prefix='fastp2p-registry-') as temporary:
         class Echo(socketserver.BaseRequestHandler):
             def handle(self):
                 while data:=self.request.recv(65536):self.request.sendall(data)
-        echo=socketserver.ThreadingTCPServer(('127.0.0.1',0),Echo);echo.daemon_threads=True
+        # Both addresses belong to the isolated namespace. Exercise the LAN
+        # ingress and the exit's connection to an address other than localhost.
+        ingress_ip, target_ip = '192.168.50.1', '192.168.15.1'
+        for address in (ingress_ip, target_ip):
+            subprocess.run(['ip','addr','add',address+'/32','dev','lo'],check=True)
+        echo=socketserver.ThreadingTCPServer((target_ip,0),Echo);echo.daemon_threads=True
         threading.Thread(target=echo.serve_forever,daemon=True).start()
-        def transfer(port):
-            with socket.create_connection(('127.0.0.1',port),timeout=2) as stream:
+        def transfer(address, port):
+            with socket.create_connection((address,port),timeout=2) as stream:
                 stream.settimeout(5);payload=secrets.token_bytes(16384);stream.sendall(payload);data=bytearray()
                 while len(data)<len(payload):
                     part=stream.recv(len(payload)-len(data))
@@ -110,12 +115,21 @@ with tempfile.TemporaryDirectory(prefix='fastp2p-registry-') as temporary:
                 return data==payload
         ports=[]
         for transport,priority in [('tcp',3),('quic',1)]:
-            with socket.socket() as free:free.bind(('127.0.0.1',0));port=free.getsockname()[1]
-            reply=api('/api/v1/device/'+names[0]+'/app',{'appName':'auto-'+transport,'protocol':'tcp','srcPort':port,
-                      'peerNode':names[1],'dstHost':'127.0.0.1','dstPort':echo.server_address[1],'punchPriority':priority})
+            listen_ip = ingress_ip if transport == 'quic' else '127.0.0.1'
+            other_ip = '127.0.0.1' if transport == 'quic' else ingress_ip
+            with socket.socket() as free:free.bind((listen_ip,0));port=free.getsockname()[1]
+            rule={'appName':'auto-'+transport,'protocol':'tcp','srcPort':port,
+                  'peerNode':names[1],'dstHost':target_ip,'dstPort':echo.server_address[1],'punchPriority':priority}
+            if transport == 'quic':
+                rule['whitelist']=listen_ip
+            reply=api('/api/v1/device/'+names[0]+'/app',rule)
             assert reply['error']==0
-            wait(lambda: transfer(port),45);result['canonical_name_'+transport+'_forwarding']=True
-            ports.append(port)
+            wait(lambda: transfer(listen_ip,port),45);result['canonical_name_'+transport+'_forwarding']=True
+            with socket.socket() as wrong_address:
+                wrong_address.settimeout(1)
+                assert wrong_address.connect_ex((other_ip,port)) != 0
+            ports.append((listen_ip,port))
+        result['explicit_lan_binding_and_default_loopback_forward_to_remote_lan']=True
         new_names=['renamed-source','renamed-target']
         before=mapping()
         for previous,name in zip(names,new_names):
@@ -123,8 +137,8 @@ with tempfile.TemporaryDirectory(prefix='fastp2p-registry-') as temporary:
             wait(lambda: any(n['name']==name for n in api('/api/v1/devices')['nodes']))
         after=mapping()
         assert after=={device:dict(zip(names,new_names)).get(name,name) for device,name in before.items()}
-        for port in ports:
-            wait(lambda: transfer(port),45)
+        for address,port in ports:
+            wait(lambda: transfer(address,port),45)
         result['automatic_nodes_keep_identity_and_tcp_quic_forwarding_after_rename']=True
         stop(three);stop(four)
         process.terminate();assert process.wait(timeout=10)==0

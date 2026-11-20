@@ -1276,6 +1276,12 @@ static const char *input_string(json_object *body, const char *field) {
     return strlen(text) == (size_t)json_object_get_string_len(value) ? text : NULL;
 }
 
+static int bind_text_valid(const char *text) {
+    struct in_addr v4;
+    struct in6_addr v6;
+    return inet_pton(AF_INET, text, &v4) == 1 || inet_pton(AF_INET6, text, &v6) == 1;
+}
+
 static int reserved_email(const char *email) {
     char admin[257];
     return !strcmp(email, g.admin_email) ||
@@ -2268,6 +2274,15 @@ static void handle_http(struct connection *c) {
             http_error(c, 400, 1, "invalid rule");
             return;
         }
+        json_object *listen_address;
+        if (json_object_object_get_ex(j, "whitelist", &listen_address)) {
+            const char *address = input_string(j, "whitelist");
+            if (!address || (*address && !bind_text_valid(address))) {
+                json_object_put(j);
+                http_error(c, 400, 1, "listen address must be an IPv4 or IPv6 literal");
+                return;
+            }
+        }
 
         /* Editing carries the identity of the old rule; remove that key first. */
         int edited = *old_protocol && old_port;
@@ -2845,12 +2860,6 @@ static void usage(void) {
          "Default bind: 127.0.0.1. NAT ports: TCP 27180-27181, UDP 27180-27183\n"
          "per address family. --bind6/--apibind6 add independent IPv6 listeners\n"
          "with identical behaviour; without them the gateway is IPv4-only.");
-}
-/* Accepts an IPv4 or IPv6 literal (SPEC §1/§7). */
-static int bind_text_valid(const char *text) {
-    struct in_addr v4;
-    struct in6_addr v6;
-    return inet_pton(AF_INET, text, &v4) == 1 || inet_pton(AF_INET6, text, &v6) == 1;
 }
 static int options(int argc, char **argv) {
     g.max_nodes = GW_MAX_NODES;

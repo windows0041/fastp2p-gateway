@@ -237,6 +237,9 @@ def main():
                 open_device(c.name);expect(page.locator('#rule-message')).to_contain_text('尚未配置转发规则')
                 page.locator('#add-rule').click();page.locator('#rule-name').fill('浏览器测试转发');page.locator('#rule-source').fill('24567')
                 page.locator('#rule-peer').fill(go.name);page.locator('#rule-target').fill('80');page.locator('#rule-transport').select_option('tcp')
+                listen_address=page.get_by_label('监听地址')
+                expect(listen_address).to_have_value('127.0.0.1')
+                listen_address.fill('127.0.0.2')
                 page.locator('#save-rule').click()
                 try:expect(page.locator('#rules')).to_contain_text('浏览器测试转发')
                 except AssertionError:
@@ -246,7 +249,10 @@ def main():
                         'responses':[(r.status,r.text(),r.request.post_data) for r in mutations]}
                     page.screenshot(path=str(args.output/'failure.png'),full_page=True)
                     raise
-                if not args.client:assert any(sub==9 and body.get('punchPriority')==3 for sub,body in c.commands)
+                expect(page.locator('#rules')).to_contain_text('127.0.0.2:24567')
+                if not args.client:
+                    assert any(sub==9 and body.get('punchPriority')==3 and body.get('whitelist')=='127.0.0.2'
+                               for sub,body in c.commands)
                 else:results['real_C_client_Chinese_rule_roundtrip']=True
                 # A C client now supports the full rule surface, so the console
                 # offers editing for it instead of pointing at the config file.
