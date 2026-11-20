@@ -702,6 +702,8 @@
     if (!/^[1-9][0-9]{15}$/.test(state.installToken) ||
         !/^https:\/\/(?:[A-Za-z0-9_.-]+|\[[0-9A-Fa-f:.]+\])(?::\d+)?$/.test(origin))
       return '';
+    if (platform === 'windows')
+      return `& ([ScriptBlock]::Create((Invoke-WebRequest -UseBasicParsing '${origin}/windows/install.ps1').Content)) -Token '${state.installToken}'`;
     const shell = platform === 'linux' ? 'sh' : 'bash';
     return `curl -fsSL '${origin}/${platform}/install' | ${shell} -s -- --token ${state.installToken}`;
   }
@@ -750,7 +752,7 @@
     const list = $('install-list');
     const platform = state.installPlatform;
     const notes = {
-      windows: '在 Git Bash 中运行，按提示确认管理员权限。',
+      windows: '在 PowerShell 中运行，按提示确认管理员权限。',
       macos: '在 macOS 13 或更新版本的终端中，用当前登录用户运行。',
       linux: '在 Linux 终端中运行，按提示使用 sudo。使用 GNU wget 时，可用 wget -qO- 代替 curl -fsSL。',
       android: '在手机上下载并安装 APK，然后回到此页点「打开 FastP2P 并接入」。'

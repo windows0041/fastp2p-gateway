@@ -1418,7 +1418,7 @@ static const char *install_command_platform(const char *uri) {
         return "linux";
     if (!strcmp(uri, "/macos/install"))
         return "macos";
-    if (!strcmp(uri, "/windows/install"))
+    if (!strcmp(uri, "/windows/install") || !strcmp(uri, "/windows/install.ps1"))
         return "windows";
     return NULL;
 }
@@ -1450,6 +1450,7 @@ static int windows_install_package(struct gw_install_package *package) {
 static void serve_install_command(struct connection *c, const char *platform) {
     char *script = NULL;
     size_t length = 0;
+    const int powershell = !strcmp(c->uri, "/windows/install.ps1");
     int result;
     if (!strcmp(platform, "windows")) {
         struct gw_install_package package = {0};
@@ -1459,7 +1460,7 @@ static void serve_install_command(struct connection *c, const char *platform) {
             return;
         }
         if (result > 0)
-            result = gw_render_windows_installer(g.public_host, g.ws_port, &package, &script, &length);
+            result = gw_render_windows_installer(g.public_host, g.ws_port, &package, powershell, &script, &length);
     } else {
         const struct gw_installer *installer = !strcmp(platform, "linux") ? &gw_linux_installer : &gw_macos_installer;
         struct gw_install_package packages[GW_INSTALLER_MAX_ARCHES];
@@ -1484,7 +1485,7 @@ static void serve_install_command(struct connection *c, const char *platform) {
         http_error(c, 503, 1, "cannot prepare installation script");
         return;
     }
-    c->response_type = "text/x-shellscript; charset=utf-8";
+    c->response_type = powershell ? "text/plain; charset=utf-8" : "text/x-shellscript; charset=utf-8";
     http_reply(c, 200, script, length);
     free(script);
 }

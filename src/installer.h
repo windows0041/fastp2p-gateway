@@ -23,7 +23,7 @@ int gw_render_installer(const struct gw_installer *installer, const char *host,
 /* Public script entry points receive a token at runtime. */
 int gw_wrap_installer(const char *body, size_t body_length, char **script, size_t *length);
 int gw_render_windows_installer(const char *host, unsigned port, const struct gw_install_package *package,
-                                char **script, size_t *length);
+                                int powershell, char **script, size_t *length);
 /* Immutable token-free downloader; the selected executables remain on the gateway. */
 int gw_build_installer(const struct gw_installer *installer, const char *directory,
                        const char *host, unsigned port, const char *ca,

@@ -86,17 +86,22 @@ docker build -t fastp2p-gateway:local .
 
 同步 GitHub 最新稳定客户端成功后，清理较低版本的镜像包和手动上传包，保留相同或更高版本。正在下载或已下发升级的版本暂缓清理，后台每分钟重试过期租约和删除失败项。同步失败时保留现有包。
 
-登录后打开「安装客户端」，复制对应平台的命令。把示例中的 `xxxx` 换成控制台提供的 16 位 Token。Windows 用 Git Bash 并按提示确认管理员权限，macOS 用当前登录用户运行，Linux 脚本会在需要时调用 `sudo`。
+登录后打开「安装客户端」，复制对应平台的命令。把示例中的 `xxxx` 换成控制台提供的 16 位 Token。Windows 在 PowerShell 中运行，并按提示确认管理员权限。
+
+```powershell
+& ([ScriptBlock]::Create((Invoke-WebRequest -UseBasicParsing 'https://fastp2p.top:10008/windows/install.ps1').Content)) -Token 'xxxx'
+```
+
+macOS 用当前登录用户运行，Linux 脚本会在需要时调用 `sudo`。
 
 ```sh
-curl -fsSL https://fastp2p.top:10008/windows/install | bash -s -- --token xxxx
 curl -fsSL https://fastp2p.top:10008/macos/install | bash -s -- --token xxxx
 curl -fsSL https://fastp2p.top:10008/linux/install | sh -s -- --token xxxx
 ```
 
 Linux 也可使用 GNU wget 执行 `wget -qO- https://fastp2p.top:10008/linux/install | sh -s -- --token xxxx`。如果控制台端口仅供本机访问，可使用网关公开的 HTTPS/WSS 端口访问同样的路径。Android 用户在手机上点「下载 APK」，安装后回到此页点「打开 FastP2P 并接入」。
 
-固定入口返回不含账号 Token 的脚本。脚本接收本机传入的 `--token` 参数，使用 `Authorization: FastP2P <Token>` 从网关下载客户端，并校验包的长度和 SHA-256。Linux 和 macOS 脚本自动识别 CPU 架构，Linux 的 MIPS 用户空间检测使用 `dd`。手动下载继续使用 `GET /api/v1/update/install`，可直接运行带 Token 文件名的旧安装包。旧的一次性链接和客户端远程升级继续使用原有接口。修改安装脚本后须重新构建网关，Docker 构建上下文使用仓库根目录。
+固定入口返回不含账号 Token 的脚本。脚本接收本机传入的 `-Token`（PowerShell）或 `--token`（shell），使用 `Authorization: FastP2P <Token>` 从网关下载客户端，并校验包的长度和 SHA-256。Linux 和 macOS 脚本自动识别 CPU 架构，Linux 的 MIPS 用户空间检测使用 `dd`。旧的 Git Bash 命令仍可使用 `/windows/install`。手动下载继续使用 `GET /api/v1/update/install`，可直接运行带 Token 文件名的旧安装包。旧的一次性链接和客户端远程升级继续使用原有接口。修改安装脚本后须重新构建网关，Docker 构建上下文使用仓库根目录。
 
 专用客户端包通过 [客户端仓库的 `common/bootstrap.json`](https://github.com/windows0041/fastp2p/blob/main/common/bootstrap.json) 预置网关地址和公开 CA，用户只需输入 16 位数字 Token。更换服务器 CA 或地址后需要重新构建专用客户端。
 

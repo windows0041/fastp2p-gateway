@@ -400,15 +400,15 @@ def main():
                         db.execute("INSERT INTO release_packages SELECT ?,version,sha256,size,filename,uploaded_at FROM updates WHERE platform='windows'",('linux-'+arch,))
                 view('install');page.get_by_role('tab',name='Linux',exact=True).click()
                 page.locator('#refresh-updates').click()
-                def check_shell_command(platform, shell, account_token=token):
+                def check_shell_command(platform, shell):
                     command=page.locator('#install-command')
                     url=f'https://127.0.0.1:31008/{platform}/install'
-                    expect(command).to_have_value(f"curl -fsSL '{url}' | {shell} -s -- --token {account_token}")
+                    expect(command).to_have_value(f"curl -fsSL '{url}' | {shell} -s -- --token {token}")
                     response=page.request.get(url)
                     assert response.status==200 and response.headers['cache-control']=='no-store'
                     body=response.body()
                     assert body.startswith(b'#!/bin/sh\n') and b'--token' in body
-                    assert account_token.encode() not in body and token.encode() not in body
+                    assert token.encode() not in body
                     subprocess.run([*wsl,'sh','-n'],input=body,check=True)
                     invalid=subprocess.run([*wsl,'sh','-s','--','--token','invalid'],
                         input=body,capture_output=True,check=False)
@@ -549,6 +549,12 @@ def main():
                 assert re.fullmatch(r'[1-9][0-9]{15}',member_token) and member_token!=token
                 view('devices');expect(page.locator('#nodes tr')).to_have_count(0)
                 member=Peer('web-member-node','fixture',member_token,root/'certs/ca.crt');peers.append(member)
+                page.wait_for_function('''async () => {
+                    const session=JSON.parse(sessionStorage.getItem('fastp2p.console'));
+                    const r=await fetch('/api/v1/nodes?name=web-member-node', {
+                        headers:{Authorization:'Bearer '+session.token}});
+                    return r.ok && (await r.json()).nodes.some(node => node.name==='web-member-node');
+                }''',polling=200,timeout=10000)
                 page.locator('#refresh').click();expect(page.locator('#nodes tr')).to_have_count(1)
                 expect(page.locator('#nodes')).to_contain_text('web-member-node')
                 if args.client:
@@ -559,9 +565,22 @@ def main():
                 expect(page.locator('#sync-release')).to_be_hidden()
                 expect(page.locator('#upload-update')).to_be_hidden()
                 command=page.locator('#install-command')
-                installer=check_shell_command('windows','bash',member_token)
-                assert b'platform=windows&version=9.9.9' in installer
-                assert b'Get-FileHash' in installer and b'powershell.exe' in installer
+                ps_url='https://127.0.0.1:31008/windows/install.ps1'
+                expect(command).to_have_value(
+                    f"& ([ScriptBlock]::Create((Invoke-WebRequest -UseBasicParsing '{ps_url}').Content)) -Token '{member_token}'")
+                expect(page.locator('#install-note')).to_contain_text('PowerShell')
+                installer=page.request.get(ps_url)
+                assert installer.status==200 and installer.headers['content-type'].startswith('text/plain')
+                assert installer.headers['cache-control']=='no-store'
+                script=installer.body()
+                assert script.startswith(b'param([string]$Token)\n')
+                assert b'platform=windows&version=9.9.9' in script and b'Get-FileHash' in script
+                assert b'FASTP2P_INSTALL_TOKEN' not in script and member_token.encode() not in script
+                assert page.request.get(ps_url.replace(':31008/', ':37183/')).body()==script
+                legacy=page.request.get(ps_url.removesuffix('.ps1'))
+                assert legacy.status==200 and legacy.body().startswith(b'#!/bin/sh\n')
+                assert script in legacy.body()
+                subprocess.run([*wsl,'sh','-n'],input=legacy.body(),check=True)
                 context.grant_permissions(['clipboard-read','clipboard-write'])
                 page.get_by_role('button',name='复制命令',exact=True).click()
                 assert page.evaluate('navigator.clipboard.readText()')==command.input_value()
@@ -583,7 +602,7 @@ def main():
                 assert (download_dir/f'fastp2p-windows-v9.9.9-{member_token}.exe').read_bytes()==b'MZ\x00\x00'
                 reused=subprocess.check_output([*curl,'-sS','-w','%{http_code}','-o','/dev/null',url],text=True)
                 assert reused=='403'
-                results['signup_account_scope_fixed_install_commands_and_legacy_link']=True
+                results['signup_account_scope_powershell_command_and_legacy_install_compatibility']=True
                 assert not errors,errors
                 context.close();browser.close()
             assert all(peer.error is None for peer in peers)

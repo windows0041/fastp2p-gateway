@@ -191,7 +191,7 @@ int gw_wrap_installer(const char *body, size_t body_length, char **script, size_
 }
 
 int gw_render_windows_installer(const char *host, unsigned port, const struct gw_install_package *package,
-                                char **script, size_t *length) {
+                                int powershell, char **script, size_t *length) {
     if ((!fastp2p_enrollment_host_valid(host) && !gw_is_ipv6_literal(host)) ||
         !port || port > 65535 || !download_valid(package))
         return -1;
@@ -200,19 +200,25 @@ int gw_render_windows_installer(const char *host, unsigned port, const struct gw
     FILE *memory = open_memstream(script, length);
     if (!memory)
         return -1;
-    fputs(install_command_header, memory);
-    fputs("if ! command -v powershell.exe >/dev/null 2>&1; then\n"
-          "    printf '%s\\n' 'fastp2p: run this command in Git Bash on Windows.' >&2\n"
-          "    exit 1\n"
-          "fi\n"
-          "script=$(cat <<'FASTP2P_WINDOWS_EOF'\n", memory);
+    if (!powershell) {
+        fputs(install_command_header, memory);
+        fputs("if ! command -v powershell.exe >/dev/null 2>&1; then\n"
+              "    printf '%s\\n' 'fastp2p: run this command in Git Bash on Windows.' >&2\n"
+              "    exit 1\n"
+              "fi\n"
+              "script=$(cat <<'FASTP2P_WINDOWS_EOF'\n"
+              "$installToken = $env:FASTP2P_INSTALL_TOKEN\n"
+              "Remove-Item Env:FASTP2P_INSTALL_TOKEN\n& {\n", memory);
+    }
+    fputs("param([string]$Token)\n", memory);
     fprintf(memory, "$downloadUrl = 'https://%s:%u/api/v1/update/download?platform=windows&version=%s'\n"
                     "$version = '%s'\n$expectedSize = %" PRIu64 "\n$expectedSha = '%s'\n",
             authority, port, package->version, package->version, package->size, package->sha);
     fputs(windows_install_script, memory);
-    fputs("\nFASTP2P_WINDOWS_EOF\n)\n"
-          "FASTP2P_INSTALL_TOKEN=$token MSYS2_ARG_CONV_EXCL='*' \\\n"
-          "    powershell.exe -NoProfile -NonInteractive -Command \"$script\"\n", memory);
+    if (!powershell)
+        fputs("\n} -Token $installToken\nFASTP2P_WINDOWS_EOF\n)\n"
+              "FASTP2P_INSTALL_TOKEN=$token MSYS2_ARG_CONV_EXCL='*' \\\n"
+              "    powershell.exe -NoProfile -NonInteractive -Command \"$script\"\n", memory);
     if (fclose(memory)) { free(*script); return -1; }
     return 0;
 }
