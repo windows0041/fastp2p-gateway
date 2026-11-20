@@ -21,9 +21,12 @@ add_custom_command(OUTPUT "${INSTALLER_HEADER}"
           "${CMAKE_CURRENT_SOURCE_DIR}/client-scripts/linux-installer.sh"
           "${CMAKE_CURRENT_SOURCE_DIR}/client-scripts/fastp2p-service.sh"
           "${CMAKE_CURRENT_SOURCE_DIR}/client-scripts/macos-installer.sh"
+          "${CMAKE_CURRENT_SOURCE_DIR}/client-scripts/command-installer.sh"
+          "${CMAKE_CURRENT_SOURCE_DIR}/client-scripts/windows-installer.ps1"
           "${INSTALLER_HEADER}"
   DEPENDS scripts/embed-installers.py client-scripts/linux-installer.sh
           client-scripts/fastp2p-service.sh client-scripts/macos-installer.sh
+          client-scripts/command-installer.sh client-scripts/windows-installer.ps1
   VERBATIM)
 add_custom_command(OUTPUT "${WEB_HEADER}"
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/embed-web.py"

@@ -1413,6 +1413,82 @@ static int bootstrap_path(const char *uri) {
     return !strcmp(uri, "/api/v1/install/bootstrap");
 }
 
+static const char *install_command_platform(const char *uri) {
+    if (!strcmp(uri, "/linux/install"))
+        return "linux";
+    if (!strcmp(uri, "/macos/install"))
+        return "macos";
+    if (!strcmp(uri, "/windows/install"))
+        return "windows";
+    return NULL;
+}
+
+static int windows_install_package(struct gw_install_package *package) {
+    char minimum[32] = "";
+    gw_store_release_version(g.db, minimum);
+    json_object *list = gw_store_updates(g.db);
+    if (!list)
+        return -1;
+    for (size_t i = 0; i < json_object_array_length(list); ++i) {
+        json_object *row = json_object_array_get_idx(list, i);
+        const char *version = gw_string(row, "version");
+        if (strcmp(gw_string(row, "platform"), "windows") ||
+            !gw_store_package_key_valid("windows", version) ||
+            (*minimum && version_compare(version, minimum) < 0) ||
+            version_compare(version, package->version) <= 0)
+            continue;
+        snprintf(package->version, sizeof(package->version), "%s", version);
+        snprintf(package->sha, sizeof(package->sha), "%s", gw_string(row, "sha256"));
+        package->size = gw_integer(row, "size");
+    }
+    json_object_put(list);
+    if (!*package->version)
+        return 0;
+    return gw_store_package_lease(g.db, "windows", package->version, (uint64_t)time(NULL) + 600) ? -1 : 1;
+}
+
+static void serve_install_command(struct connection *c, const char *platform) {
+    char *script = NULL;
+    size_t length = 0;
+    int result;
+    if (!strcmp(platform, "windows")) {
+        struct gw_install_package package = {0};
+        result = windows_install_package(&package);
+        if (!result) {
+            http_error(c, 404, 1, "no Windows package found");
+            return;
+        }
+        if (result > 0)
+            result = gw_render_windows_installer(g.public_host, g.ws_port, &package, &script, &length);
+    } else {
+        const struct gw_installer *installer = !strcmp(platform, "linux") ? &gw_linux_installer : &gw_macos_installer;
+        struct gw_install_package packages[GW_INSTALLER_MAX_ARCHES];
+        size_t count = 0;
+        result = installer_packages(installer, "", packages, &count);
+        if (!result && !count) {
+            http_error(c, 404, 1, "no supported packages found for this platform");
+            return;
+        }
+        if (!result) {
+            char *body = NULL;
+            size_t body_length = 0;
+            result = gw_render_installer(installer, g.public_host, g.ws_port, g.enrollment_ca, packages,
+                                         count, 0, &body, &body_length);
+            if (!result) {
+                result = gw_wrap_installer(body, body_length, &script, &length);
+                free(body);
+            }
+        }
+    }
+    if (result) {
+        http_error(c, 503, 1, "cannot prepare installation script");
+        return;
+    }
+    c->response_type = "text/x-shellscript; charset=utf-8";
+    http_reply(c, 200, script, length);
+    free(script);
+}
+
 static void issue_install_link(struct connection *c) {
     json_object *j = gw_json(c->request, c->request_length);
     const char *platform = input_string(j, "platform");
@@ -1495,6 +1571,11 @@ static void handle_http(struct connection *c) {
     int download = !c->post && !c->put && !c->deleting &&
                    !strcmp(c->uri, "/api/v1/update/download");
     int bootstrap = !c->post && !c->put && !c->deleting && bootstrap_path(c->uri);
+    const char *install_platform = !c->post && !c->put && !c->deleting ? install_command_platform(c->uri) : NULL;
+    if (install_platform) {
+        serve_install_command(c, install_platform);
+        return;
+    }
     if (!download && !bootstrap && !on_api_vhost(c->wsi)) {
         http_error(c, 404, 1, "not found");
         return;
@@ -2561,7 +2642,8 @@ static int callback(struct lws *wsi, enum lws_callback_reasons reason, void *use
         int method_length = 0;
         int method = lws_http_get_uri_and_method(wsi, &method_uri, &method_length);
         if (!on_api_vhost(wsi) &&
-            (method != LWSHUMETH_GET || (strcmp(c->uri, "/api/v1/update/download") && !bootstrap_path(c->uri)))) {
+            (method != LWSHUMETH_GET || (strcmp(c->uri, "/api/v1/update/download") &&
+             !bootstrap_path(c->uri) && !install_command_platform(c->uri)))) {
             http_error(c, 404, 1, "not found");
             return 0;
         }

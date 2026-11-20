@@ -92,14 +92,17 @@ const struct gw_installer gw_linux_installer={"linux",linux_arches,sizeof(linux_
 const struct gw_installer gw_macos_installer={"macos",macos_arches,sizeof(macos_arches)/sizeof(*macos_arches),
                                               macos_install_script,NULL,macos_payload_arches};
 
+static int download_valid(const struct gw_install_package *p) {
+    return *p->version && strspn(p->version,"0123456789.")==strlen(p->version) &&
+        strlen(p->sha)==64 && strspn(p->sha,"0123456789abcdef")==64 &&
+        p->size && p->size<=128u*1024u*1024u;
+}
 static int package_valid(const struct gw_installer *installer,const struct gw_install_package *p) {
     int supported=0;
     for(size_t i=0;i<installer->count;i++)if(p->arch && !strcmp(p->arch,installer->arches[i]))supported=1;
     char platform[24];snprintf(platform,sizeof(platform),"%s-%s",installer->platform,p->arch?p->arch:"");
     return supported && (!strcmp(p->platform,installer->platform) || !strcmp(p->platform,platform)) &&
-        *p->version && strspn(p->version,"0123456789.")==strlen(p->version) &&
-        strlen(p->sha)==64 && strspn(p->sha,"0123456789abcdef")==64 &&
-        p->size && p->size<=128u*1024u*1024u;
+        download_valid(p);
 }
 static int cached_valid(const char *path,const char *script,size_t length) {
     int fd=open(path,O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
@@ -168,6 +171,52 @@ int gw_render_installer(const struct gw_installer *installer, const char *host,
     if(fclose(memory)){free(*script);return -1;}
     return 0;
 }
+int gw_wrap_installer(const char *body, size_t body_length, char **script, size_t *length) {
+    /* Stage the existing installer so sudo can re-execute it from a file. */
+    if (strstr(body, "FASTP2P_COMMAND_PAYLOAD_EOF"))
+        return -1;
+    FILE *memory = open_memstream(script, length);
+    if (!memory)
+        return -1;
+    fputs(install_command_header, memory);
+    fputs("directory=$(mktemp -d /tmp/fastp2p-command.XXXXXXXX)\n"
+          "installer=$directory/fastp2p-$token\n"
+          "trap 'rm -f \"$installer\"; rmdir \"$directory\"' 0\n"
+          "trap 'exit 129' HUP\ntrap 'exit 130' INT\ntrap 'exit 143' TERM\n"
+          "cat > \"$installer\" <<'FASTP2P_COMMAND_PAYLOAD_EOF'\n", memory);
+    fwrite(body, 1, body_length, memory);
+    fputs("\nFASTP2P_COMMAND_PAYLOAD_EOF\nsh \"$installer\"\n", memory);
+    if (fclose(memory)) { free(*script); return -1; }
+    return 0;
+}
+
+int gw_render_windows_installer(const char *host, unsigned port, const struct gw_install_package *package,
+                                char **script, size_t *length) {
+    if ((!fastp2p_enrollment_host_valid(host) && !gw_is_ipv6_literal(host)) ||
+        !port || port > 65535 || !download_valid(package))
+        return -1;
+    char authority[300];
+    gw_host_url_authority(authority, sizeof(authority), host);
+    FILE *memory = open_memstream(script, length);
+    if (!memory)
+        return -1;
+    fputs(install_command_header, memory);
+    fputs("if ! command -v powershell.exe >/dev/null 2>&1; then\n"
+          "    printf '%s\\n' 'fastp2p: run this command in Git Bash on Windows.' >&2\n"
+          "    exit 1\n"
+          "fi\n"
+          "script=$(cat <<'FASTP2P_WINDOWS_EOF'\n", memory);
+    fprintf(memory, "$downloadUrl = 'https://%s:%u/api/v1/update/download?platform=windows&version=%s'\n"
+                    "$version = '%s'\n$expectedSize = %" PRIu64 "\n$expectedSha = '%s'\n",
+            authority, port, package->version, package->version, package->size, package->sha);
+    fputs(windows_install_script, memory);
+    fputs("\nFASTP2P_WINDOWS_EOF\n)\n"
+          "FASTP2P_INSTALL_TOKEN=$token MSYS2_ARG_CONV_EXCL='*' \\\n"
+          "    powershell.exe -NoProfile -NonInteractive -Command \"$script\"\n", memory);
+    if (fclose(memory)) { free(*script); return -1; }
+    return 0;
+}
+
 int gw_build_installer(const struct gw_installer *installer,const char *directory,
                        const char *host,unsigned port,const char *ca,
                        const struct gw_install_package *packages,size_t count,char path[700]) {

@@ -400,18 +400,23 @@ def main():
                         db.execute("INSERT INTO release_packages SELECT ?,version,sha256,size,filename,uploaded_at FROM updates WHERE platform='windows'",('linux-'+arch,))
                 view('install');page.get_by_role('tab',name='Linux',exact=True).click()
                 page.locator('#refresh-updates').click()
-                def check_shell_command(downloader):
+                def check_shell_command(platform, shell, account_token=token):
                     command=page.locator('#install-command')
-                    ticket_pattern=r"https://127\.0\.0\.1:37183/api/v1/install/bootstrap\?ticket=[a-f0-9]{48}"
-                    expect(command).to_have_value(re.compile(re.escape(downloader)+r'.*'+ticket_pattern+r"' && sh "))
-                    value=command.input_value()
-                    assert token not in value
-                    url=re.search(ticket_pattern,value).group()
+                    url=f'https://127.0.0.1:31008/{platform}/install'
+                    expect(command).to_have_value(f"curl -fsSL '{url}' | {shell} -s -- --token {account_token}")
                     response=page.request.get(url)
                     assert response.status==200 and response.headers['cache-control']=='no-store'
-                    assert response.body().startswith(b'#!/bin/sh\n') and f"token='{token}'".encode() in response.body()
-                    assert page.request.get(url).status==403
-                check_shell_command('wget -qO')
+                    body=response.body()
+                    assert body.startswith(b'#!/bin/sh\n') and b'--token' in body
+                    assert account_token.encode() not in body and token.encode() not in body
+                    subprocess.run([*wsl,'sh','-n'],input=body,check=True)
+                    invalid=subprocess.run([*wsl,'sh','-s','--','--token','invalid'],
+                        input=body,capture_output=True,check=False)
+                    assert invalid.returncode==2 and b'16-digit' in invalid.stderr
+                    repeated=page.request.get(url.replace(':31008/', ':37183/'))
+                    assert repeated.status==200 and repeated.body()==body
+                    return body
+                assert b"expected_version='9.9.9'" in check_shell_command('linux','sh')
                 page.locator('.install-manual summary').click()
                 linux_button=page.locator('#install-list').get_by_role('button',name='下载 Linux 通用安装脚本',exact=True)
                 expect(linux_button).to_have_count(1)
@@ -434,7 +439,7 @@ def main():
                     db.execute("INSERT INTO release_packages SELECT 'macos-x86_64',version,sha256,size,filename,uploaded_at FROM updates WHERE platform='macos'")
                 page.get_by_role('tab',name='Mac',exact=True).click()
                 page.locator('#refresh-updates').click()
-                check_shell_command('curl -fsS -o')
+                assert b"expected_version='9.9.9'" in check_shell_command('macos','bash')
                 macos_button=page.locator('#install-list').get_by_role('button',name='下载 macOS 通用安装脚本',exact=True)
                 expect(page.locator('#install-list button')).to_have_count(1)
                 expect(page.locator('#updates')).to_contain_text('macOS（自动识别架构）')
@@ -554,12 +559,22 @@ def main():
                 expect(page.locator('#sync-release')).to_be_hidden()
                 expect(page.locator('#upload-update')).to_be_hidden()
                 command=page.locator('#install-command')
-                expect(command).to_have_value(re.compile(r'curl\.exe -fsS -OJ'))
+                installer=check_shell_command('windows','bash',member_token)
+                assert b'platform=windows&version=9.9.9' in installer
+                assert b'Get-FileHash' in installer and b'powershell.exe' in installer
                 context.grant_permissions(['clipboard-read','clipboard-write'])
                 page.get_by_role('button',name='复制命令',exact=True).click()
                 assert page.evaluate('navigator.clipboard.readText()')==command.input_value()
-                assert member_token not in command.input_value()
-                url=re.search(r'https://[^\s\']+',command.input_value()).group()
+                # Existing one-use links and manual downloads keep their behavior.
+                link=page.evaluate('''async () => {
+                    const session=JSON.parse(sessionStorage.getItem('fastp2p.console'));
+                    const response=await fetch('/api/v1/install/link',{method:'POST',
+                        headers:{Authorization:'Bearer '+session.token,'Content-Type':'application/json'},
+                        body:JSON.stringify({platform:'windows',version:'9.9.9'})});
+                    if (!response.ok) throw new Error('Legacy installation link request failed');
+                    return response.json();
+                }''')
+                url=link['url']
                 ca=remote+'/certs/ca.crt' if args.wsl else str(root/'certs/ca.crt')
                 download_dir=root/'ticket-test';download_dir.mkdir()
                 curl=[*wsl,'curl','--cacert',ca]
@@ -568,7 +583,7 @@ def main():
                 assert (download_dir/f'fastp2p-windows-v9.9.9-{member_token}.exe').read_bytes()==b'MZ\x00\x00'
                 reused=subprocess.check_output([*curl,'-sS','-w','%{http_code}','-o','/dev/null',url],text=True)
                 assert reused=='403'
-                results['signup_account_scope_and_one_use_install_command']=True
+                results['signup_account_scope_fixed_install_commands_and_legacy_link']=True
                 assert not errors,errors
                 context.close();browser.close()
             assert all(peer.error is None for peer in peers)

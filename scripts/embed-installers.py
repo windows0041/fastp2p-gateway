@@ -4,8 +4,14 @@ import json
 import sys
 from pathlib import Path
 
-linux, service, macos, output_path = sys.argv[1:]
-scripts = {'linux_install_script': linux, 'linux_service_script': service, 'macos_install_script': macos}
+linux, service, macos, command, windows, output_path = sys.argv[1:]
+scripts = {
+    'linux_install_script': linux,
+    'linux_service_script': service,
+    'macos_install_script': macos,
+    'install_command_header': command,
+    'windows_install_script': windows,
+}
 with Path(output_path).open('w', encoding='utf-8') as output:
     for name, path in scripts.items():
         script = Path(path).read_text(encoding='utf-8')

@@ -697,19 +697,13 @@
       text('reveal-token', '隐藏'); text('copy-token', '请手动复制');
     }
   });
-  function installCommand(platform, url) {
-    if (!/^https:\/\/(?:[A-Za-z0-9_.-]+|\[[0-9A-Fa-f:.]+\]):\d+\/api\/v1\/install\/bootstrap\?ticket=[a-f0-9]{48}$/.test(url))
-      throw new Error('网关返回的安装链接无效。');
-    if (platform === 'linux' || platform === 'macos') {
-      const download = platform === 'linux' ? 'wget -qO' : 'curl -fsS -o';
-      return `(s=$(mktemp /tmp/fastp2p.XXXXXX) && trap 'rm -f "$s"' 0 && ${download} "$s" '${url}' && sh "$s")`;
-    }
-    return [
-      '& { $d=(New-Item -ItemType Directory -Path (Join-Path $env:TEMP ([guid]::NewGuid())) -ErrorAction Stop).FullName; Push-Location -LiteralPath $d -ErrorAction Stop;',
-      `try { $f=curl.exe -fsS -OJ -w '%{filename_effective}' '${url}'; if ($LASTEXITCODE) { throw 'Download failed' };`,
-      'if ((Start-Process ".\\$f" -Verb RunAs -Wait -PassThru).ExitCode) { throw "Installation failed" }',
-      "} finally { Pop-Location; Get-ChildItem -LiteralPath $d -File -Filter 'fastp2p-*.exe' | Remove-Item -Force; Remove-Item -LiteralPath $d } }"
-    ].join(' ');
+  function installCommand(platform) {
+    const origin = window.location.origin;
+    if (!/^[1-9][0-9]{15}$/.test(state.installToken) ||
+        !/^https:\/\/(?:[A-Za-z0-9_.-]+|\[[0-9A-Fa-f:.]+\])(?::\d+)?$/.test(origin))
+      return '';
+    const shell = platform === 'linux' ? 'sh' : 'bash';
+    return `curl -fsSL '${origin}/${platform}/install' | ${shell} -s -- --token ${state.installToken}`;
   }
   function renderInstallCommand(platform, wanted) {
     if ($('view-install').hidden) return;
@@ -737,45 +731,28 @@
     const label = element('label', '', '安装命令');
     label.htmlFor = 'install-command';
     const command = element('textarea', 'mono');
-    command.id = 'install-command'; command.rows = 4; command.readOnly = true;
+    command.id = 'install-command'; command.rows = 2; command.readOnly = true;
     command.spellcheck = false;
+    command.value = installCommand(platform);
     const copy = element('button', 'button primary', '复制命令');
-    const renew = element('button', 'link-button', '生成新命令');
-    copy.type = renew.type = 'button';
+    copy.type = 'button';
+    copy.disabled = !command.value;
     const row = element('div', 'install-command'); row.append(command, copy);
-    const status = element('p', 'muted'); status.setAttribute('role', 'status');
-    const actions = element('div', 'install-command-actions'); actions.append(renew, status);
-    section.replaceChildren(label, row, actions);
-    let expiresAt = 0;
-    async function generate() {
-      command.value = ''; copy.disabled = renew.disabled = true; status.textContent = '正在生成安装命令…';
-      try {
-        const link = await api('/api/v1/install/link', {platform, version});
-        if (!command.isConnected) return;
-        command.value = installCommand(platform, link.url);
-        expiresAt = Date.now() + link.expiresIn * 1000;
-        copy.disabled = false;
-        copy.textContent = '复制命令';
-        status.textContent = '命令 10 分钟内有效，下载一次后失效。';
-      } catch (error) { status.textContent = error.message; }
-      finally { renew.disabled = false; }
-    }
+    section.replaceChildren(label, row);
+    if (!command.value)
+      section.append(element('p', 'muted', '请通过 HTTPS 登录控制台，获取带 Token 的安装命令。'));
     copy.addEventListener('click', async () => {
-      if (Date.now() >= expiresAt) await generate();
-      if (!command.value) return;
       try { await navigator.clipboard.writeText(command.value); copy.textContent = '已复制'; }
       catch { command.focus(); command.select(); copy.textContent = '请手动复制'; }
     });
-    renew.addEventListener('click', generate);
-    generate();
   }
   function renderInstall() {
     const list = $('install-list');
     const platform = state.installPlatform;
     const notes = {
-      windows: '在 PowerShell 中运行，按提示确认管理员权限。',
+      windows: '在 Git Bash 中运行，按提示确认管理员权限。',
       macos: '在 macOS 13 或更新版本的终端中，用当前登录用户运行。',
-      linux: '在有 wget 的 Linux 终端中运行，按提示使用 sudo。脚本会识别 CPU 架构并安装服务。',
+      linux: '在 Linux 终端中运行，按提示使用 sudo。使用 GNU wget 时，可用 wget -qO- 代替 curl -fsSL。',
       android: '在手机上下载并安装 APK，然后回到此页点「打开 FastP2P 并接入」。'
     };
     text('install-note', notes[platform]);
