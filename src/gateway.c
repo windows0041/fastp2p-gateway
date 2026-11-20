@@ -301,6 +301,21 @@ static void report_ipv4(struct connection *c, json_object *j) {
         return;
     inet_ntop(AF_INET, &address, c->probed_ipv4, sizeof(c->probed_ipv4));
 }
+static unsigned mapped_port(json_object *report, const char *key) {
+    json_object *field = gw_get(report, key);
+    int64_t port = json_object_is_type(field, json_type_int) ? json_object_get_int64(field) : 0;
+    return port > 0 && port <= UINT16_MAX ? (unsigned)port : 0;
+}
+static void report_port_mapping(struct connection *c, json_object *j) {
+    struct in_addr mapped, observed;
+    const char *ip = c->observed_family == GW_FAMILY_V4 ? c->ip : c->probed_ipv4;
+    c->mapped_tcp_port = c->mapped_udp_port = 0;
+    if (inet_pton(AF_INET, gw_string(j, "mappedIPv4"), &mapped) == 1 &&
+        inet_pton(AF_INET, ip, &observed) == 1 && mapped.s_addr == observed.s_addr) {
+        c->mapped_tcp_port = mapped_port(j, "mappedTCPPort");
+        c->mapped_udp_port = mapped_port(j, "mappedUDPPort");
+    }
+}
 static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const unsigned char *data,
                     size_t len) {
     if (main == 1) {
@@ -363,6 +378,7 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
         if (nat_fields(c, j)) { json_object_put(j); return -1; }
         report_ipv4(c, j);
         report_ipv6(c, j);
+        report_port_mapping(c, j);
         if (gw_store_save(g.db, c, 1)) {
             json_object_put(j); return -1;
         }
@@ -413,6 +429,7 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
         }
         c->public_port = (unsigned)port;
         c->public_udp = port && gw_integer(j, "publicUDP") == 1;
+        report_port_mapping(c, j);
         c->config_supported = gw_integer(j,"configPush") != 0;
         c->restart_supported = gw_integer(j, "restart") == 1;
         c->major = major_version(c->version);
@@ -743,6 +760,10 @@ static void capabilities(json_object *node) {
         gw_integer(node, "renameSupported") || (live && live->rename_supported)));
     json_object_object_add(node, "capabilities", caps);
 }
+static void node_mapping(json_object *j, const struct connection *live) {
+    gw_ju(j, "mappedTCPPort", live ? live->mapped_tcp_port : 0);
+    gw_ju(j, "mappedUDPPort", live ? live->mapped_udp_port : 0);
+}
 static json_object *devices(sqlite3_int64 owner) {
     json_object *root = json_object_new_object(), *nodes = json_object_new_array();
     json_object_object_add(root, "nodes", nodes);
@@ -759,6 +780,7 @@ static json_object *devices(sqlite3_int64 owner) {
         gw_js(j, "ipv6", n->ipv6);
         gw_ju(j, "publicIPPort", n->public_port);
         gw_ju(j, "publicUDP", n->public_udp);
+        node_mapping(j, n);
         snprintf(number, sizeof(number), "%u", n->nat);
         gw_js(j, "natType", number);
         gw_ju(j, "udpNatType", n->nat);
@@ -1907,7 +1929,9 @@ static void handle_http(struct connection *c) {
             json_object *node = json_object_array_get_idx(nodes, i);
             uint64_t id = 0;
             struct connection *live = !gw_decimal(gw_string(node, "id"), &id) ? find_node(id) : NULL;
-            gw_ju(node, "isActive", live && !strcmp(live->node, gw_string(node, "name")) ? 1 : 0);
+            int online = live && live->owner == c->owner && !strcmp(live->node, gw_string(node, "name"));
+            gw_ju(node, "isActive", online);
+            node_mapping(node, online ? live : NULL);
             capabilities(node);
         }
         http_json(c, 200, j);

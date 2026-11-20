@@ -55,6 +55,7 @@ struct connection {
     /* families is the gateway-side view of DUALSTACK-SPEC §1: the observed WSS
      * family is hard evidence, the client-reported bitmap may add the other. */
     unsigned nat, bandwidth, has_ipv4, has_upnp, public_port, public_udp, major, families, has_ipv6;
+    unsigned mapped_tcp_port, mapped_udp_port;
     /* Full NAT1..NAT4 level from the inbound-filtering refinement (0 unknown,
      * 5 = cone with untestable filtering). Kept apart from `nat`, which stays a
      * pure mapping observation for the relay filter and for old peers. */

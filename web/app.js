@@ -903,6 +903,9 @@
     text('device-heading', (node.alias || node.name));
     text('device-summary', (node.os || '未知系统') + ' · ' + (node.ip || '—'));
     const fields = $('device-fields');
+    const mappedPorts = [];
+    if (node.mappedTCPPort) mappedPorts.push(`TCP ${node.mappedTCPPort}`);
+    if (node.mappedUDPPort) mappedPorts.push(`UDP ${node.mappedUDPPort}`);
     const rows = [
       ['设备名字', node.name],
       ['操作系统', node.os || '—'],
@@ -911,6 +914,7 @@
       ['公网 IPv6', node.ipv6 || '—'],
       ['内网 IP', node.lanip || '—'],
       ['业务端口', node.publicIPPort ? `${node.publicIPPort} / ${node.publicUDP ? 'TCP + UDP' : 'TCP'}` : '—'],
+      ['公网 IPv4 映射', mappedPorts.join(' / ') || '—'],
       ['NAT 类型', 'UDP：' + udpLevel(node) + ' / TCP：' + tcpLabel(node)],
       ['最近活跃', node.activetime ? String(node.activetime) : '—'],
       ['状态', Number(node.isActive) === 1 ? '在线' : '离线'],

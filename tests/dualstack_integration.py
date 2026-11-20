@@ -193,6 +193,24 @@ try:
         assert live['ip'] == '198.51.100.21', live
         results['v4_probe_visible_over_v6_control'] = True
 
+        def mapped_ports():
+            node = next(n for n in nodes() if n['name'] == 'v6-only-node')
+            return node['mappedTCPPort'], node['mappedUDPPort']
+
+        v6.send(message(6, 9, {'mappedIPv4': '198.51.100.21',
+                                 'mappedTCPPort': 44001, 'mappedUDPPort': 44002}))
+        wait(lambda: mapped_ports() == (44001, 44002))
+        live = next(n for n in api('/api/v1/devices', jwt=jwt)[1]['nodes']
+                    if n['name'] == 'v6-only-node')
+        assert (live['mappedTCPPort'], live['mappedUDPPort']) == (44001, 44002)
+        v6.send(message(6, 9, {'mappedIPv4': '198.51.100.21',
+                                 'mappedTCPPort': 70000, 'mappedUDPPort': 44002}))
+        wait(lambda: mapped_ports() == (0, 44002))
+        v6.send(message(6, 9, {'mappedIPv4': '192.168.1.1',
+                                 'mappedTCPPort': 44001, 'mappedUDPPort': 44002}))
+        wait(lambda: mapped_ports() == (0, 0))
+        results['only_matching_wan_mappings_are_visible'] = True
+
         # (b) dual-stack node: v4 socket + reported v6 literal + families=3.
         dual = WS('dual-stack-node', family=4,
                   extra='&nattype=1&families=3&ipv6=2001%3Adb8%3A%3A1&tcpnattype=2')
