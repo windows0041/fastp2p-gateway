@@ -149,6 +149,11 @@
       row.append(nat, element('td', 'mono', n.version || '—'));
       const active = Number(n.isActive) === 1;
       const status = element('td'); status.append(element('span', 'badge ' + (active ? 'online' : 'offline'), active ? '● 在线' : '○ 离线')); row.append(status);
+      if (n.upgradeState === 'failed') {
+        const failed = element('div', 'form-error', '升级失败');
+        failed.title = n.upgradeDetail || '请查看设备详情';
+        status.append(failed);
+      }
       /* The gateway reports the last heartbeat as a formatted date; an empty value
        * means the node has not been seen since it was registered. */
       const seen = element('td', 'mono');
@@ -919,6 +924,11 @@
       ['最近活跃', node.activetime ? String(node.activetime) : '—'],
       ['状态', Number(node.isActive) === 1 ? '在线' : '离线'],
     ];
+    if (node.upgradeState) {
+      const states = {queued: '已发送', accepted: '客户端已接受', failed: '失败'};
+      rows.push(['升级状态', [node.upgradeVersion, states[node.upgradeState], node.upgradeDetail]
+        .filter(Boolean).join(' · ')]);
+    }
     fields.replaceChildren(...rows.map(([label, value]) => {
       const row = element('div', 'device-field');
       const field = element('span', 'device-field-value mono', String(value));

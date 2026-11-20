@@ -23,6 +23,7 @@
 #include <unistd.h>
 
 static struct gateway g;
+static uint64_t upgrade_sequence;
 static volatile sig_atomic_t stopping;
 static struct install_ticket {
     char key[49], platform[8], version[32];
@@ -457,6 +458,15 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
         if(c->config_supported && gw_store_config_ack(g.db,c->node,gw_integer(j,"revision"),gw_string(j,"state"))) {
             json_object_put(j);return -1;
         }
+    } else if (main == 6 && sub == 10) {
+        const char *state = gw_string(j, "state");
+        if (c->upgrade_id && gw_integer(j, "upgradeId") == c->upgrade_id &&
+            (!strcmp(state, "failed") || !strcmp(state, "accepted")) &&
+            !strcmp(c->upgrade_state, "queued")) {
+            snprintf(c->upgrade_state, sizeof(c->upgrade_state), "%s", state);
+            if (!strcmp(state, "failed"))
+                copy_field(c->upgrade_detail, sizeof(c->upgrade_detail), j, "detail");
+        }
     } else if (main == 6 && sub == 3 && c->pending_http) {
         struct connection *http = c->pending_http;
         c->pending_http = NULL;
@@ -764,6 +774,13 @@ static void node_mapping(json_object *j, const struct connection *live) {
     gw_ju(j, "mappedTCPPort", live ? live->mapped_tcp_port : 0);
     gw_ju(j, "mappedUDPPort", live ? live->mapped_udp_port : 0);
 }
+static void node_upgrade(json_object *j, const struct connection *live) {
+    if (!live || !live->upgrade_id)
+        return;
+    gw_js(j, "upgradeState", live->upgrade_state);
+    gw_js(j, "upgradeVersion", live->upgrade_version);
+    gw_js(j, "upgradeDetail", live->upgrade_detail);
+}
 static json_object *devices(sqlite3_int64 owner) {
     json_object *root = json_object_new_object(), *nodes = json_object_new_array();
     json_object_object_add(root, "nodes", nodes);
@@ -781,6 +798,7 @@ static json_object *devices(sqlite3_int64 owner) {
         gw_ju(j, "publicIPPort", n->public_port);
         gw_ju(j, "publicUDP", n->public_udp);
         node_mapping(j, n);
+        node_upgrade(j, n);
         snprintf(number, sizeof(number), "%u", n->nat);
         gw_js(j, "natType", number);
         gw_ju(j, "udpNatType", n->nat);
@@ -1096,6 +1114,10 @@ static int push_update(struct connection *node, const char *version) {
         return 1;
     json_object *j = json_object_new_object();
     gw_js(j, "version", version);
+    uint64_t id = ++upgrade_sequence;
+    if (!id)
+        id = ++upgrade_sequence;
+    gw_ju(j, "upgradeId", id);
     gw_js(j, "sha256", sha);
     gw_ju(j, "size", size);
     gw_js(j, "platform", platform);
@@ -1114,6 +1136,12 @@ static int push_update(struct connection *node, const char *version) {
     gw_js(j, "url", url);
     int rv = send_json(node, 3, 18, j);
     json_object_put(j);
+    if (!rv) {
+        node->upgrade_id = id;
+        snprintf(node->upgrade_version, sizeof(node->upgrade_version), "%s", version);
+        strcpy(node->upgrade_state, "queued");
+        node->upgrade_detail[0] = 0;
+    }
     return rv ? 1 : 0;
 }
 
@@ -1932,6 +1960,7 @@ static void handle_http(struct connection *c) {
             int online = live && live->owner == c->owner && !strcmp(live->node, gw_string(node, "name"));
             gw_ju(node, "isActive", online);
             node_mapping(node, online ? live : NULL);
+            node_upgrade(node, online ? live : NULL);
             capabilities(node);
         }
         http_json(c, 200, j);
