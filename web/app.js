@@ -566,7 +566,10 @@
     $('peer-names').replaceChildren(...state.nodes.filter(n => n.name !== state.selected.name).map(n => {
       const option = element('option'); option.value = n.name; return option;
     }));
-    renderRelayOptions(app?.NoRelay ? '__no_relay__' : (app?.relayNode || ''));
+    // The descriptor keeps a switch the rule form does not have a column for, and
+    // the stored row is rendered back from it, so "no relay" has to be read from
+    // either place or reopening the dialog silently resets it to auto.
+    renderRelayOptions((app?.NoRelay || app?._config?.NoRelay) ? '__no_relay__' : (app?.relayNode || ''));
     syncRuleFields();
     $('rule-dialog').showModal();
   }
@@ -650,13 +653,22 @@
         app.dstPort = Number($('rule-target').value);
       }
       const relay = $('rule-relay').value;
-      if (relay) {
+      // The relay choice has three states (auto, a named relay, none) and the rule
+      // is edited as a copy of the stored one, so clear the previous answer first:
+      // otherwise switching back to auto kept the old "no relay" switch on.
+      const noRelay = relay === '__no_relay__';
+      delete app.NoRelay;
+      if (app._config) delete app._config.NoRelay;
+      app.relayNode = '';
+      if (noRelay) {
+        // NoRelay travels inside the rule descriptor: the gateway carries unknown
+        // rule fields through to the client untouched.
+        app.NoRelay = true;
+        if (app._config) app._config.NoRelay = true;
+      } else if (relay) {
         if (relay === app.peerNode) throw new Error('中继节点不能是对端节点本身。');
         if (relay === node.name) throw new Error('中继节点不能是本节点本身。');
         app.relayNode = relay;
-      // NoRelay travels inside the rule descriptor: the gateway carries
-      // unknown rule fields through to the client untouched.
-      if (relay === '__no_relay__') { app.NoRelay = true; app.relayNode = ''; }
       }
       if (!app.appName || app.peerNode === node.name ||
           (!socks && !app.dstHost)) throw new Error('请填写有效名称、对端节点' + (socks ? '' : '和目标地址') + '。');
