@@ -166,7 +166,7 @@ int gw_store_rename(sqlite3 *db, sqlite3_int64 owner, const char *old_name, cons
         if (row != SQLITE_DONE)
             goto done;
     }
-    result = 0;
+    result = gw_store_sdwan_rebind(db, owner, old_name, new_name);
 done:
     sqlite3_finalize(statement);
     if (!result && sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK)

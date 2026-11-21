@@ -25,6 +25,15 @@
   const natDetail = value =>
     ({1: '映射与目标无关', 2: '对称（端口随机）', 3: '对称（端口递增）', 4: '对称（端口递减）'}[Number(value)] || '探测未完成');
   const hasFamily = (node, bit) => (Number(node.families) || 1) & bit;
+  const beijingFormatter = new Intl.DateTimeFormat('zh-CN', {timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'});
+  function beijingTime(value) {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '—';
+    const part = Object.fromEntries(beijingFormatter.formatToParts(date).map(p => [p.type, p.value]));
+    return part.year + '-' + part.month + '-' + part.day + ' ' + part.hour + ':' + part.minute;
+  }
   function persist() {
     try {
       if (state.token)
@@ -95,6 +104,16 @@
           'invalid account settings':'请填写有效账号和至少 8 位的新密码。',
           'invalid email or password':'请输入有效邮箱和至少 8 位的密码。', 'email already registered':'此邮箱已注册，请登录。',
           'invalid node name':'设备名须为 8–31 个字母、数字、下划线或连字符。',
+          'invalid SD-WAN member list':'网络最多包含 33 台设备。',
+          'invalid SD-WAN IPv4 subnet':'请输入标准的 IPv4 网段，例如 10.3.2.0/24。',
+          'SD-WAN member is not registered to this account':'成员必须是本账号下已登记的设备。',
+          'duplicate SD-WAN member':'每台设备只能加入一次。',
+          'invalid SD-WAN member address':'设备的虚拟 IPv4 地址必须在虚拟网段内，并避开网络和广播地址。',
+          'duplicate SD-WAN IPv4 address':'每台设备的虚拟 IPv4 地址必须唯一。',
+          'too many SD-WAN routes or invalid route list':'子网路由数量超出限制。',
+          'invalid SD-WAN route prefix':'请输入标准的 IPv4 子网，例如 192.168.15.0/24。',
+          'SD-WAN route overlaps the virtual subnet':'共享子网不能与虚拟网段重叠。',
+          'duplicate SD-WAN route prefix':'同一个子网只能由一台设备共享。',
           'node name already in use':'此设备名已被占用，请换一个名字。',
           'client rename unsupported':'请先升级客户端并让设备重新连接。',
           'package not found':'安装包已更新，请刷新后重试。',
@@ -157,7 +176,7 @@
       /* The gateway reports the last heartbeat as a formatted date; an empty value
        * means the node has not been seen since it was registered. */
       const seen = element('td', 'mono');
-      seen.append(document.createTextNode(n.activetime ? String(n.activetime) : '—'));
+      seen.append(document.createTextNode(beijingTime(n.activetime)));
       row.append(seen);
       const action = element('td'), button = element('button', 'link-button', active ? '编辑' : '查看记录');
       button.type = 'button'; button.setAttribute('aria-label', button.textContent + ' ' + n.name);
@@ -261,9 +280,9 @@
     $('rules').replaceChildren(); $('add-rule').disabled = !active;
     $('refresh-apps').disabled = !active; renderNodes();
     text('selected-name', node ? node.name : '选择一个节点');
-    text('selected-description', node ? `${node.hostname || node.os || '未知主机'} · ${node.ip || '—'} · 最近在线 ${node.lastSeen || '—'}` : '在上方节点列表中打开设备，查看它的应用转发。');
+    text('selected-description', node ? `${node.hostname || node.os || '未知主机'} · ${node.ip || '—'} · 最近在线 ${beijingTime(node.lastSeen || node.activetime)}` : '在上方节点列表中打开设备，查看它的应用转发。');
     if (active) loadApps();
-    else ruleMessage(node ? `节点已离线，登记信息保留在 SQLite 中。首次在线：${node.firstSeen || '—'}；最近离线：${node.lastOffline || '—'}。` : '尚未选择节点。');
+    else ruleMessage(node ? `节点已离线。首次在线 ${beijingTime(node.firstSeen)}，最近离线 ${beijingTime(node.lastOffline)}。` : '尚未选择节点。');
   }
   async function loadApps({quiet = false} = {}) {
     if (Number(state.selected?.isActive) !== 1 || state.loadingApps) return;
@@ -493,6 +512,34 @@
     }
     if (socks) $('rule-destination').value = '127.0.0.1';
   }
+  function renderRelayOptions(selected = $('rule-relay').value) {
+    const relay = $('rule-relay');
+    const peerName = $('rule-peer').value.trim(), source = state.selected;
+    if (!source) return;
+    const peer = state.nodes.find(n => n.name === peerName);
+    const sourceFamilies = Number(source.families) || 1;
+    const common = (peer && (sourceFamilies & (Number(peer.families) || 1))) || sourceFamilies;
+    const ipv6 = Boolean(common & 2), tcp = $('rule-transport').value === 'tcp';
+    relay.replaceChildren(new Option('自动选择（按 NAT 质量）', ''),
+      new Option('无需中继（只走打洞直连）', '__no_relay__'));
+    for (const node of state.nodes) {
+      if (Number(node.isActive) !== 1 || node.name === source.name || node.name === peerName ||
+          (((Number(node.families) || 1) & common) !== common)) continue;
+      const mapping = Number(node[tcp ? (ipv6 ? 'tcpNatType6' : 'tcpNatType') :
+        (ipv6 ? 'udpNatType6' : 'udpNatType')]);
+      const level = ipv6 ? 0 : Number(node[tcp ? 'tcpNatLevel' : 'natLevel']);
+      if ((mapping >= 2 && mapping <= 4) || level === 4 || (!tcp && level === 7)) continue;
+      const label = ipv6 ? (tcp ? tcpMapping(mapping) : natDetail(mapping)) :
+        (tcp ? tcpLabel(node) : udpLevel(node));
+      relay.append(new Option(node.name + '（' + label + '）', node.name));
+    }
+    if (selected && !Array.from(relay.options).some(option => option.value === selected)) {
+      const unavailable = new Option(selected + '（当前不可用）', selected);
+      unavailable.disabled = true;
+      relay.append(unavailable);
+    }
+    relay.value = selected;
+  }
   function openRule(app = null) {
     if (!state.selected) return;
     state.editing = app; $('rule-form').reset(); $('rule-error').hidden = true;
@@ -519,27 +566,13 @@
     $('peer-names').replaceChildren(...state.nodes.filter(n => n.name !== state.selected.name).map(n => {
       const option = element('option'); option.value = n.name; return option;
     }));
-    // Relay candidates: every other registered node, labelled with its NAT type
-    // so a node reachable without hairpin NAT is easy to pick.
-    const relay = $('rule-relay');
-    relay.replaceChildren(element('option', null, '自动选择（按 NAT 质量）'));
-    relay.firstChild.value = '';
-    // An explicit opt-out lives in the same list: a rule that cannot use a
-    // relay (for example both ends behind one NAT) picks this instead.
-    const noneOption = element('option', null, '无需中继（只走打洞直连）');
-    noneOption.value = '__no_relay__';
-    relay.append(noneOption);
-    for (const n of state.nodes) {
-      if (n.name === state.selected.name) continue;
-      const option = element('option', null,
-        `${n.name}（UDP：${udpLevel(n)} / TCP：${tcpMapping(n.tcpNatType)}）`);
-      option.value = n.name; relay.append(option);
-    }
-    relay.value = app?.NoRelay ? '__no_relay__' : (app?.relayNode || '');
+    renderRelayOptions(app?.NoRelay ? '__no_relay__' : (app?.relayNode || ''));
     syncRuleFields();
     $('rule-dialog').showModal();
   }
   $('rule-protocol').addEventListener('change', syncRuleFields);
+  $('rule-transport').addEventListener('change', () => renderRelayOptions());
+  $('rule-peer').addEventListener('input', () => renderRelayOptions());
   let registering = false;
   function authMode(signup) {
     registering = signup;
@@ -800,7 +833,111 @@
   for (const item of navItems)
     item.addEventListener('click', () => { location.hash = '#/' + item.dataset.view; });
 
-  const PAGES = ['overview', 'devices', 'device', 'install', 'mine'];
+  const sdwanStates = {offline: '离线，待上线', unsupported: '客户端待升级', queued: '等待应用',
+    saved: '已保存，等待应用或授权', applied: '已应用', failed: '客户端应用失败'};
+  let sdwanRequest = 0, sdwanRow = 0, sdwanSaving = false;
+
+  function sdwanMembers() {
+    return Array.from($('sdwan-members').children);
+  }
+  function renderSdwanStatus(plan) {
+    const states = new Map(plan.members.map(member => [member.node, member.state]));
+    for (const row of sdwanMembers()) {
+      const value = row.querySelector('[name="node"]').value.trim();
+      row.querySelector('[data-status]').textContent = sdwanStates[states.get(value)] || '';
+    }
+  }
+  function addSdwanRow(member = {}) {
+    const row = element('div', 'sdwan-member');
+    const number = ++sdwanRow;
+    const fields = element('div', 'sdwan-member-inputs');
+    for (const [name, title, hint, value] of [
+      ['node', '设备', '选择或输入设备名', member.node || ''],
+      ['address', '虚拟 IPv4', '10.3.2.1', member.address || ''],
+      ['routes', '共享子网（可选）', '192.168.15.0/24', (member.routes || []).join(', ')]
+    ]) {
+      const field = element('div');
+      const label = element('label', null, title);
+      const input = element('input');
+      input.id = label.htmlFor = 'sdwan-' + name + '-' + number;
+      input.name = name; input.placeholder = hint; input.value = value;
+      input.required = name !== 'routes'; input.spellcheck = false; input.autocomplete = 'off';
+      input.maxLength = name === 'routes' ? 2304 : name === 'node' ? 31 : 15;
+      if (name === 'node') input.setAttribute('list', 'sdwan-node-names');
+      field.append(label, input);
+      fields.append(field);
+    }
+    const actions = element('div', 'sdwan-member-actions');
+    const status = element('span', 'muted', sdwanStates[member.state] || '');
+    status.setAttribute('data-status', '');
+    const remove = element('button', 'link-button', '移除');
+    remove.type = 'button';
+    remove.addEventListener('click', () => row.remove());
+    actions.append(status, remove);
+    row.append(fields, actions);
+    $('sdwan-members').append(row);
+    return row;
+  }
+  async function loadSdwan(replace) {
+    if (!state.token || (!replace && (sdwanSaving || $('sdwan-fields').disabled))) return;
+    const token = state.token, request = ++sdwanRequest;
+    const current = () => state.token === token && request === sdwanRequest && location.hash === '#/sdwan';
+    if (replace) {
+      $('sdwan-fields').disabled = true;
+      $('sdwan-error').hidden = true;
+      text('sdwan-message', '正在读取网络配置…');
+    }
+    try {
+      const plan = await api('/api/v1/sdwan');
+      if (!current()) return;
+      $('sdwan-node-names').replaceChildren(...state.nodes.map(node => new Option(node.name)));
+      if (replace) {
+        $('sdwan-subnet').value = plan.subnet;
+        $('sdwan-members').replaceChildren();
+        for (const member of plan.members) addSdwanRow(member);
+        text('sdwan-message', '');
+        $('sdwan-fields').disabled = false;
+      } else renderSdwanStatus(plan);
+    } catch (error) {
+      if (replace && current()) {
+        text('sdwan-message', '');
+        text('sdwan-error', error.message);
+        $('sdwan-error').hidden = false;
+      }
+    }
+  }
+  $('sdwan-add').addEventListener('click', () => {
+    if (sdwanMembers().length < 33) addSdwanRow().querySelector('input').focus();
+  });
+  $('sdwan-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    if (sdwanSaving || $('sdwan-fields').disabled) return;
+    const token = state.token;
+    const members = sdwanMembers().map(row => ({
+      node: row.querySelector('[name="node"]').value.trim(),
+      address: row.querySelector('[name="address"]').value.trim(),
+      routes: row.querySelector('[name="routes"]').value.trim().split(/[\s,，]+/).filter(Boolean)
+    }));
+    sdwanSaving = true;
+    ++sdwanRequest;
+    $('sdwan-fields').disabled = true;
+    $('sdwan-error').hidden = true;
+    try {
+      const plan = await api('/api/v1/sdwan', {subnet: $('sdwan-subnet').value.trim(), members});
+      if (state.token !== token || location.hash !== '#/sdwan') return;
+      renderSdwanStatus(plan);
+      text('sdwan-message', '配置已保存。请查看各设备的应用状态。');
+    } catch (error) {
+      if (state.token !== token || location.hash !== '#/sdwan') return;
+      text('sdwan-error', error.message);
+      $('sdwan-error').hidden = false;
+    } finally {
+      sdwanSaving = false;
+      if (state.token === token && location.hash === '#/sdwan') $('sdwan-fields').disabled = false;
+    }
+  });
+
+  const PAGES = ['overview', 'devices', 'device', 'sdwan', 'install', 'mine'];
   function showView(name) {
     for (const page of PAGES) $('view-' + page).hidden = page !== name;
     for (const item of navItems) {
@@ -846,6 +983,7 @@
       return;
     }
     if (state.selected) selectNode(null);
+    if (hash === '#/sdwan') { showView('sdwan'); await loadSdwan(true); return; }
     if (hash === '#/install') { showView('install'); renderInstallPage(); return; }
     if (hash === '#/mine') { showView('mine'); renderMinePage(); return; }
     if (hash === '#/overview' || hash === '#/') { showView('overview'); return; }
@@ -905,7 +1043,7 @@
       ['业务端口', node.publicIPPort ? `${node.publicIPPort} / ${node.publicUDP ? 'TCP + UDP' : 'TCP'}` : '—'],
       ['公网 IPv4 映射', mappedPorts.join(' / ') || '—'],
       ['NAT 类型', 'UDP：' + udpLevel(node) + ' / TCP：' + tcpLabel(node)],
-      ['最近活跃', node.activetime ? String(node.activetime) : '—'],
+      ['最近活跃（北京时间）', beijingTime(node.activetime)],
       ['状态', Number(node.isActive) === 1 ? '在线' : '离线'],
     ];
     if (node.upgradeState) {
@@ -962,7 +1100,11 @@
   $('add-rule').addEventListener('click', () => openRule());
   for (const id of ['close-rule-dialog', 'cancel-rule']) $(id).addEventListener('click', () => $('rule-dialog').close());
   $('cancel-confirm').addEventListener('click', () => $('confirm-dialog').close());
-  setInterval(() => { if (!document.hidden) refresh(); }, 10000);
+  setInterval(() => {
+    if (document.hidden) return;
+    refresh();
+    if (location.hash === '#/sdwan') loadSdwan(false);
+  }, 10000);
   try {
     const saved = JSON.parse(sessionStorage.getItem(STORE) || 'null');
     if (saved && typeof saved.token === 'string' && saved.token) {

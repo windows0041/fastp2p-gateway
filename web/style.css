@@ -101,3 +101,10 @@
   .install-command{grid-template-columns:1fr}
   .install-command .button{justify-self:end}
 }
+.sdwan-fields{min-width:0;padding:0;margin:0;border:0}
+.sdwan-fields #sdwan-subnet{max-width:18rem}
+.sdwan-heading,.sdwan-member-actions{display:flex;align-items:center;justify-content:space-between;gap:.75rem;margin:1rem 0 .5rem}
+.sdwan-member{border-top:1px solid var(--line,#e2e8f0);padding:.75rem 0}
+.sdwan-member-inputs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr)) minmax(0,2fr);gap:.75rem}
+.sdwan-member-actions{margin:.5rem 0 0}
+@media(max-width:650px){.sdwan-member-inputs{grid-template-columns:1fr}}

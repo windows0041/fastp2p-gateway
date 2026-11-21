@@ -90,11 +90,11 @@ json_object *gw_store_config(sqlite3 *db,const char *node) {
     if(!json_object_is_type(fields,json_type_object)) {if(fields)json_object_put(fields);json_object_put(root);return NULL;}
     json_object_object_add(root,"fields",fields);gw_ju(root,"error",0);return root;
 }
-int gw_store_config_put(sqlite3 *db,const char *node,json_object *fields) {
+/* The caller holds a transaction when writing several nodes as a single change. */
+int gw_store_config_patch(sqlite3 *db,const char *node,json_object *fields) {
     if(!gw_node_valid(node)||!json_object_is_type(fields,json_type_object))return -1;
     json_object *forbidden=NULL;
     if(json_object_object_get_ex(fields,"_fastp2pManaged",&forbidden))return -1;
-    if(sqlite3_exec(db,"BEGIN IMMEDIATE",NULL,NULL,NULL)!=SQLITE_OK)return -1;
     json_object *old=gw_store_config(db,node),*next=NULL;int result=-1;
     if(!old||fp_config_merge(gw_get(old,"fields"),fields,&next))goto done;
     const char *text=json_object_to_json_string_ext(next,JSON_C_TO_STRING_PLAIN);
@@ -104,12 +104,18 @@ int gw_store_config_put(sqlite3 *db,const char *node,json_object *fields) {
         "DO UPDATE SET fields=excluded.fields,revision=revision+1,state='queued'",-1,&statement,NULL)!=SQLITE_OK)goto done;
     sqlite3_bind_text(statement,1,node,-1,SQLITE_TRANSIENT);sqlite3_bind_text(statement,2,text,-1,SQLITE_TRANSIENT);
     int ok=sqlite3_step(statement)==SQLITE_DONE;sqlite3_finalize(statement);
-    if(ok&&sqlite3_exec(db,"COMMIT",NULL,NULL,NULL)==SQLITE_OK)result=0;
+    if(ok)result=0;
 done:
-    if(result)sqlite3_exec(db,"ROLLBACK",NULL,NULL,NULL);
     if(old)json_object_put(old);
     if(next)json_object_put(next);
     return result;
+}
+int gw_store_config_put(sqlite3 *db,const char *node,json_object *fields) {
+    if(sqlite3_exec(db,"BEGIN IMMEDIATE",NULL,NULL,NULL)!=SQLITE_OK)return -1;
+    if(!gw_store_config_patch(db,node,fields)&&sqlite3_exec(db,"COMMIT",NULL,NULL,NULL)==SQLITE_OK)
+        return 0;
+    sqlite3_exec(db,"ROLLBACK",NULL,NULL,NULL);
+    return -1;
 }
 int gw_store_config_ack(sqlite3 *db,const char *node,uint64_t revision,const char *state) {
     if(!gw_node_valid(node)||!state||(strcmp(state,"applied")&&strcmp(state,"saved")&&strcmp(state,"failed")))return -1;

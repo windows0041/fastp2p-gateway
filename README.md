@@ -30,6 +30,12 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
+## SD-WAN
+
+控制台的「SD-WAN」可为同一账号下的设备配置一个虚拟 IPv4 网络，默认网段为 `10.3.2.0/24`。添加成员后为每台设备填写唯一的虚拟 IPv4，可选填它要共享的子网 CIDR。网关生成各节点的对端配置，保存后立即下发，离线设备在下次上线时接收。页面会显示等待应用、已应用、需要升级或应用失败。
+
+Linux 和 OpenWrt 客户端需要 TUN 和 `iproute2`（OpenWrt 可使用 `ip-full` 与 `kmod-tun`）。Android 缺少 Root 时可用系统 VPN 访问对端，发布手机所在子网需要 Root。转发子网内其他设备的流量时，出口还需启用 IPv4 转发并配置防火墙与回程路由。
+
 ## 部署
 
 ```sh

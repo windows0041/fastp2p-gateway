@@ -107,6 +107,7 @@ int gw_store_open(sqlite3 **out, const char *path) {
                 "CREATE TABLE IF NOT EXISTS package_gc(filename TEXT PRIMARY KEY);"
                 "CREATE TABLE IF NOT EXISTS node_configs(node TEXT PRIMARY KEY,fields TEXT NOT NULL,"
                 "revision INTEGER NOT NULL,state TEXT NOT NULL,ack_revision INTEGER NOT NULL);"
+                "CREATE TABLE IF NOT EXISTS sdwan_networks(owner INTEGER PRIMARY KEY,plan TEXT NOT NULL);"
                 "PRAGMA application_id=1179660880;") || node_columns(db) ||
         sql(db, "CREATE INDEX IF NOT EXISTS nodes_owner_order ON nodes(owner,online DESC,name);"
                 "PRAGMA user_version=9; UPDATE nodes SET online=0; COMMIT;"))
@@ -142,6 +143,7 @@ int gw_device_valid(const char *text) {
 int gw_store_delete_offline(sqlite3 *db, const char *name) {
     sqlite3_stmt *s = NULL;
     if (!gw_node_valid(name) || sql(db,"BEGIN IMMEDIATE"))return -1;
+    sqlite3_int64 owner = gw_store_node_owner(db, name);
     if (sqlite3_prepare_v2(db, "DELETE FROM nodes WHERE name=? AND online=0", -1, &s, NULL) != SQLITE_OK) {
         sql(db,"ROLLBACK");
         return -1;
@@ -151,6 +153,7 @@ int gw_store_delete_offline(sqlite3 *db, const char *name) {
     sqlite3_finalize(s);
     if (!ok) {sql(db,"ROLLBACK");return -1;}
     if (changed) {
+        if (gw_store_sdwan_rebind(db, owner, name, NULL)) {sql(db,"ROLLBACK");return -1;}
         const char *tables[]={"rules","rule_nodes","node_configs","node_aliases"};
         for(unsigned i=0;i<sizeof(tables)/sizeof(tables[0]);++i) {
             char query[100];snprintf(query,sizeof(query),"DELETE FROM %s WHERE node=?",tables[i]);

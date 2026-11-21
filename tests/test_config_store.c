@@ -5,6 +5,37 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+static void sdwan_members_follow_device_lifecycle(sqlite3 *db) {
+    char assigned[32];
+    assert(!gw_store_claim_for(db, 1, "", "mesh-node-a", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1, assigned));
+    assert(!strcmp(assigned, "mesh-node-a"));
+    assert(!gw_store_claim_for(db, 1, "mesh-node-b", "", "", 0, assigned));
+    assert(!gw_store_claim_for(db, 2, "outside-node", "", "", 0, assigned));
+    json_object *graph = json_tokener_parse("{\"subnet\":\"10.3.2.0/24\",\"members\":["
+        "{\"node\":\"mesh-node-a\",\"address\":\"10.3.2.1\",\"routes\":[\"192.168.15.0/24\"]},"
+        "{\"node\":\"mesh-node-b\",\"address\":\"10.3.2.2\",\"routes\":[]}]}");
+    json_object *members = gw_get(graph, "members");
+    gw_js(json_object_array_get_idx(members, 1), "node", "outside-node");
+    assert(gw_store_sdwan_put(db, 1, graph));
+    json_object *stored = gw_store_sdwan(db, 1);
+    assert(!json_object_array_length(gw_get(stored, "members")));
+    json_object_put(stored);
+    gw_js(json_object_array_get_idx(members, 1), "node", "mesh-node-b");
+    assert(!gw_store_sdwan_put(db, 1, graph));
+    assert(!gw_store_rename(db, 1, "mesh-node-a", "mesh-renamed"));
+    stored = gw_store_config(db, "mesh-node-b");
+    json_object *profile = gw_get(gw_get(stored, "fields"), "sdwan");
+    json_object *peer = json_object_array_get_idx(gw_get(profile, "Peers"), 0);
+    assert(!strcmp(gw_string(peer, "Node"), "mesh-renamed"));
+    json_object_put(stored);
+    assert(!gw_store_delete_offline(db, "mesh-renamed"));
+    stored = gw_store_config(db, "mesh-node-b");
+    assert(json_object_object_get_ex(gw_get(stored, "fields"), "sdwan", &profile) && profile == NULL);
+    json_object_put(stored);
+    json_object_put(graph);
+}
+
 int main(void) {
     char path[]="/tmp/fastp2p-config-store-XXXXXX";int fd=mkstemp(path);assert(fd>=0);close(fd);
     sqlite3 *db=NULL;assert(!gw_store_open(&db,path));
@@ -29,6 +60,7 @@ int main(void) {
     json_object *bad=json_tokener_parse("{\"apps\":[{\"SrcPort\":1,\"Protocol\":\"invalid\"}]}");
     assert(gw_store_config_put(db,"config-store-node",bad)==-1);
     stored=gw_store_rules(db,"config-store-node");assert(json_object_array_length(stored)==1);json_object_put(stored);
+    sdwan_members_follow_device_lifecycle(db);
     json_object_put(a);json_object_put(b);json_object_put(rules);json_object_put(bad);sqlite3_close(db);
     assert(!gw_store_open(&db,path));stored=gw_store_config(db,"config-store-node");assert(gw_integer(stored,"revision")>=3);
     json_object_put(stored);sqlite3_close(db);unlink(path);

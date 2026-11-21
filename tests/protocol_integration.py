@@ -327,6 +327,30 @@ try:
         r.send(message(5,0,{'peerNode':b.name}));assert json.loads(r.until(5,1))['relay']==a.name
         a.send(message(5,0,{'peerNode':b.name,'exclude':[r.name]}));assert json.loads(a.until(5,1))['relay']==''
         results['relay_offer_selects_a_third_node_and_never_an_endpoint']=True
+        def relay_offer(transport):
+            a.send(message(5, 0, {'peerNode': b.name, 'underlayProtocol': transport}))
+            return json.loads(a.until(5, 1))['relay']
+
+        def report_relay_levels(udp, tcp):
+            r.send(message(6, 0, {'os': 'test-c-peer', 'version': '2.0.0', 'hasIPv4': 1,
+                                  'udpNatType': 1, 'tcpNatType': 1,
+                                  'natLevel': udp, 'tcpNatLevel': tcp}))
+            r.until(6, 7)
+
+        report_relay_levels(4, 1)
+        assert relay_offer('quic') == '' and relay_offer('tcp') == r.name
+        report_relay_levels(1, 4)
+        assert relay_offer('tcp') == '' and relay_offer('quic') == r.name
+        departed = WS('relay-departed', source='127.0.0.5')
+        departed.report()
+        departed.close()
+        for _ in range(30):
+            if a.query(departed)['online'] == 0:
+                break
+            time.sleep(.03)
+        assert a.query(departed)['online'] == 0 and relay_offer('tcp') == ''
+        report_relay_levels(1, 1)
+        results['relay_excludes_offline_nodes_and_NAT4_for_the_requested_protocol'] = True
         def live_rules(reported):
             replies=[]
             request=threading.Thread(target=lambda:replies.append(api('/api/v1/device/'+a.name+'/apps',jwt=jwt)))

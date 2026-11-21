@@ -43,7 +43,7 @@ add_library(gateway_protocol STATIC src/protocol.c src/security.c common/enrollm
 target_compile_definitions(gateway_protocol PUBLIC GW_VERSION="${PROJECT_VERSION}")
 target_include_directories(gateway_protocol PUBLIC src common)
 target_link_libraries(gateway_protocol PUBLIC PkgConfig::JSON OpenSSL::Crypto)
-add_library(gateway_store STATIC src/store.c src/account.c src/config_store.c src/rename.c common/config_merge.c)
+add_library(gateway_store STATIC src/store.c src/account.c src/config_store.c src/sdwan_store.c src/rename.c common/config_merge.c)
 target_link_libraries(gateway_store PUBLIC gateway_protocol SQLite::SQLite3 PkgConfig::LWS)
 add_executable(fastp2p-gateway src/gateway.c src/nat.c src/installer.c "${WEB_HEADER}" "${INSTALLER_HEADER}")
 target_include_directories(fastp2p-gateway PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")

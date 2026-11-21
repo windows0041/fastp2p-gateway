@@ -44,7 +44,7 @@ struct packet {
 };
 struct connection {
     struct lws *wsi;
-    int slot, registered, closing, config_supported, restart_supported, rename_supported;
+    int slot, registered, closing, config_supported, sdwan_supported, restart_supported, rename_supported;
     char node[32], ip[64], ipv6[128], os[128], mac[128], lan[64], version[64];
     char probed_ipv4[INET_ADDRSTRLEN];
     uint64_t id, last_rx, relay_time, active_wall;

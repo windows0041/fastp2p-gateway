@@ -40,7 +40,10 @@ static int push_config(struct connection *node) {
     if(!node||!node->config_supported)return 0;
     json_object *config=gw_store_config(g.db,node->node);
     if(!config)return -1;
-    int result=gw_integer(config,"revision")?send_json(node,3,19,config):0;
+    json_object *fields = gw_get(config, "fields");
+    if (!node->sdwan_supported)
+        json_object_object_del(fields, "sdwan");
+    int result=gw_integer(config,"revision") && json_object_object_length(fields)?send_json(node,3,19,config):0;
     json_object_put(config);return result;
 }
 static int sync_node_rules(struct connection *node) {
@@ -90,6 +93,13 @@ static void close_node(struct connection *c) {
         return;
     c->closing = 1;
     lws_set_timeout(c->wsi, PENDING_TIMEOUT_CLOSE_SEND, LWS_TO_KILL_ASYNC);
+}
+static void push_owner_sdwan(sqlite3_int64 owner) {
+    for (unsigned i = 0; i < g.max_nodes; ++i) {
+        struct connection *node = g.nodes[i];
+        if (node && !node->closing && node->owner == owner && node->sdwan_supported && push_config(node))
+            close_node(node);
+    }
 }
 static void unregister_node(struct connection *c) {
     if (!c || !c->registered)
@@ -241,6 +251,15 @@ static unsigned family_nat(const struct connection *n, unsigned family, int tcp)
     if (family == GW_FAMILY_V6)
         return tcp ? n->tcp_nat6 : n->nat6;
     return tcp ? n->tcp_nat : n->nat;
+}
+static int relay_nat_blocked(const struct connection *node, unsigned family, int tcp) {
+    unsigned mapping = family_nat(node, family, tcp);
+    if (mapping >= 2 && mapping <= 4)
+        return 1;
+    if (family != GW_FAMILY_V4)
+        return 0;
+    unsigned level = tcp ? node->tcp_level : node->nat_level;
+    return level == 4 || (!tcp && level == 7);
 }
 static unsigned observe_peer(struct lws *wsi, struct connection *c) {
     struct sockaddr_storage peer;
@@ -432,6 +451,7 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
         c->public_udp = port && gw_integer(j, "publicUDP") == 1;
         report_port_mapping(c, j);
         c->config_supported = gw_integer(j,"configPush") != 0;
+        c->sdwan_supported = c->config_supported && gw_integer(j, "sdwanPush") != 0;
         c->restart_supported = gw_integer(j, "restart") == 1;
         c->major = major_version(c->version);
         if (gw_store_save(g.db, c, 1)) {
@@ -537,11 +557,13 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
       !strcmp(family_ip(n, family), family_ip(peer, family)))                                \
          ? 0u                                                                                \
          : 1u)
+        uint64_t now_ms = gw_mono_ms();
         unsigned seen = 0, skip_self = 0, skip_peer = 0, skip_nat = 0, skip_major = 0,
                  skip_exclude = 0, skip_family = 0;
         for (unsigned i = 0; i < g.max_nodes; ++i) {
             struct connection *n = g.nodes[i];
-            if (!n || n->closing || n->owner != c->owner)
+            if (!n || !n->registered || n->closing || n->owner != c->owner ||
+                now_ms - n->last_rx > (uint64_t)g.timeout * 1000)
                 continue;
             ++seen;
             if (n->slot == c->slot) {
@@ -563,8 +585,7 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
              * different flavours and cannot accept an unsolicited peer.
              * Unknown (314) stays eligible: it usually means probing failed.
              * The level checked is the one for the selected family. */
-            unsigned candidate_nat = family_nat(n, family, tcp_relay);
-            if (candidate_nat == 2 || candidate_nat == 3 || candidate_nat == 4) {
+            if (relay_nat_blocked(n, family, tcp_relay)) {
                 ++skip_nat;
                 continue;
             }
@@ -605,7 +626,6 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
         /* An empty offer is otherwise indistinguishable from a busy gateway, so
          * report the pool and the reason each node was passed over.  Repeated
          * failures are rate limited; a successful choice is always recorded. */
-        uint64_t now_ms = gw_mono_ms();
         if (now_ms - c->relay_log_ms >= 5000) {
             printf("{\"event\":\"relay-select\",\"from\":\"%s\",\"peer\":\"%s\","
                    "\"family\":%u,\"connected\":%u,\"skipped\":{\"self\":%u,\"peer\":%u,"
@@ -747,6 +767,27 @@ static void http_json(struct connection *c, int status, json_object *j) {
     const char *text = json_object_to_json_string_ext(j, JSON_C_TO_STRING_PLAIN);
     http_reply(c, status, text, strlen(text));
 }
+static void reply_sdwan(struct connection *c) {
+    json_object *plan = gw_store_sdwan(g.db, c->owner);
+    if (!plan) {
+        http_error(c, 503, 1, "SD-WAN storage unavailable");
+        return;
+    }
+    json_object *members = gw_get(plan, "members");
+    for (size_t i = 0; i < json_object_array_length(members); ++i) {
+        json_object *member = json_object_array_get_idx(members, i);
+        const char *name = gw_string(member, "node");
+        struct connection *node = find_node(gw_node_id(name));
+        json_object *config = gw_store_config(g.db, name);
+        gw_js(member, "state", !node || node->owner != c->owner ? "offline" :
+              !node->sdwan_supported ? "unsupported" : config ? gw_string(config, "state") : "queued");
+        if (config)
+            json_object_put(config);
+    }
+    gw_ju(plan, "error", 0);
+    http_json(c, 200, plan);
+    json_object_put(plan);
+}
 static void http_error(struct connection *c, int status, unsigned code, const char *detail) {
     json_object *j = json_object_new_object();
     gw_ju(j, "error", code);
@@ -765,6 +806,7 @@ static void capabilities(json_object *node) {
     json_object_object_add(caps, "switchForward", json_object_new_boolean(1));
     struct connection *live=find_node(gw_node_id(gw_string(node,"name")));
     json_object_object_add(caps,"configPush",json_object_new_boolean(live&&live->config_supported));
+    json_object_object_add(caps,"sdwanPush",json_object_new_boolean(live&&live->sdwan_supported));
     json_object_object_add(caps, "restart", json_object_new_boolean(live && live->restart_supported));
     json_object_object_add(caps, "rename", json_object_new_boolean(
         gw_integer(node, "renameSupported") || (live && live->rename_supported)));
@@ -1906,6 +1948,21 @@ static void handle_http(struct connection *c) {
         http_error(c, 401, 1, "unauthorized");
         return;
     }
+    if (!c->put && !c->deleting && !strcmp(c->uri, "/api/v1/sdwan")) {
+        if (c->post) {
+            json_object *plan = gw_json(c->request, c->request_length);
+            const char *error = gw_store_sdwan_put(g.db, c->owner, plan);
+            if (plan)
+                json_object_put(plan);
+            if (error) {
+                http_error(c, !strcmp(error, "SD-WAN storage unavailable") ? 503 : 400, 1, error);
+                return;
+            }
+            push_owner_sdwan(c->owner);
+        }
+        reply_sdwan(c);
+        return;
+    }
     if (c->post && !strcmp(c->uri, "/api/v1/install/link")) {
         issue_install_link(c);
         return;
@@ -1976,7 +2033,10 @@ static void handle_http(struct connection *c) {
             http_error(c, 409, 1, "node is online"); return;
         }
         int result = gw_store_delete_offline(g.db, name);
-        if (result == 0) http_error(c, 200, 0, "offline node deleted");
+        if (result == 0) {
+            push_owner_sdwan(c->owner);
+            http_error(c, 200, 0, "offline node deleted");
+        }
         else if (result == 1) http_error(c, 404, 1, "node not found");
         else if (result == 2) http_error(c, 409, 1, "node is online");
         else http_error(c, 503, 1, "node storage unavailable");

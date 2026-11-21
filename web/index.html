@@ -28,6 +28,7 @@
       <div class="nav-label">工作空间</div><nav aria-label="主导航">
         <button class="nav-item active" id="overview-nav" type="button" data-view="overview" data-label="网络总览"><span aria-hidden="true">◫</span> 网络总览 <span id="nav-count" class="nav-count">0</span></button>
         <button class="nav-item" type="button" data-view="devices" data-label="设备"><span aria-hidden="true">▤</span> 设备</button>
+        <button class="nav-item" type="button" data-view="sdwan" data-label="SD-WAN"><span aria-hidden="true">⌘</span> SD-WAN</button>
         <button class="nav-item" type="button" data-view="install" data-label="安装"><span aria-hidden="true">⤓</span> 安装</button>
         <button class="nav-item" type="button" data-view="mine" data-label="我"><span aria-hidden="true">◎</span> 我</button>
         <button class="nav-item" id="side-logout" type="button"><span aria-hidden="true">⏻</span> 退出</button>
@@ -59,6 +60,25 @@
           <p id="rule-message" class="inline-message" role="status">尚未选择节点。</p>
           <div class="table-scroll"><table class="rules-table"><thead><tr><th>规则名称</th><th>入口</th><th>对端 / 目标</th><th>链路</th><th>状态</th><th>操作</th></tr></thead><tbody id="rules"></tbody></table></div>
         </section>
+</div>
+
+<div id="view-sdwan" class="view" hidden>
+  <section class="page-heading"><div><h1>SD-WAN</h1><p>为同一网络中的设备分配虚拟 IPv4 地址，并选择要共享的局域网子网。</p></div></section>
+  <section class="panel">
+    <form id="sdwan-form" class="panel-body">
+      <fieldset id="sdwan-fields" class="sdwan-fields" disabled>
+        <label for="sdwan-subnet">虚拟网段</label>
+        <input id="sdwan-subnet" value="10.3.2.0/24" maxlength="18" required spellcheck="false">
+        <div class="sdwan-heading"><h2>网络成员</h2><button id="sdwan-add" class="button" type="button">＋ 添加设备</button></div>
+        <div id="sdwan-members"></div>
+        <datalist id="sdwan-node-names"></datalist>
+        <p id="sdwan-help" class="form-help muted">添加两个或更多设备即可组网。离线设备会在下次上线时接收配置。</p>
+        <div class="dialog-actions"><button id="sdwan-save" type="submit" class="button primary">保存并下发</button></div>
+      </fieldset>
+      <p id="sdwan-message" class="form-help" role="status"></p>
+      <p id="sdwan-error" class="form-error" role="alert" hidden></p>
+    </form>
+  </section>
 </div>
 
 <div id="view-install" class="view" hidden>
