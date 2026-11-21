@@ -26,17 +26,17 @@
   <div id="console" class="console" hidden>
     <aside class="sidebar"><a class="brand" href="/"><img src="/favicon.svg" alt="" width="36" height="36"><span>FastP2P<small>网关控制台</small></span></a>
       <div class="nav-label">工作空间</div><nav aria-label="主导航">
-        <button class="nav-item active" id="overview-nav" type="button" data-view="overview" data-label="网络总览"><span aria-hidden="true">◫</span> 网络总览 <span id="nav-count" class="nav-count">0</span></button>
+        <button class="nav-item active" id="overview-nav" type="button" data-view="overview" data-label="首页"><span aria-hidden="true">◫</span> 首页 <span id="nav-count" class="nav-count">0</span></button>
         <button class="nav-item" type="button" data-view="devices" data-label="设备"><span aria-hidden="true">▤</span> 设备</button>
-        <button class="nav-item" type="button" data-view="sdwan" data-label="SD-WAN"><span aria-hidden="true">⌘</span> SD-WAN</button>
-        <button class="nav-item" type="button" data-view="install" data-label="安装"><span aria-hidden="true">⤓</span> 安装</button>
-        <button class="nav-item" type="button" data-view="mine" data-label="我"><span aria-hidden="true">◎</span> 我</button>
+        <button class="nav-item" type="button" data-view="sdwan" data-label="组网"><span aria-hidden="true">⌘</span> 组网</button>
+        <button class="nav-item" type="button" data-view="install" data-label="安装"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5v10"/><path d="M7.5 10.5 12 15l4.5-4.5"/><path d="M5 19.5h14"/></svg></span> 安装</button>
+        <button class="nav-item" type="button" data-view="mine" data-label="我"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><circle cx="12" cy="7.7" r="4.4"/><path d="M12 13.9c-4.7 0-8.5 3-8.5 6.6 0 .6.5 1.1 1.1 1.1h14.8c.6 0 1.1-.5 1.1-1.1 0-3.6-3.8-6.6-8.5-6.6Z"/></svg></span> 我</button>
         <button class="nav-item" id="side-logout" type="button"><span aria-hidden="true">⏻</span> 退出</button>
       </nav><div class="sidebar-foot"><span class="dot"></span><span>自己的网关，自己的连接<small id="sidebar-version">C Gateway</small></span></div>
     </aside>
-    <div class="workspace"><header class="topbar"><div class="breadcrumb">工作空间 <span>/</span> <strong id="page-title">网络总览</strong></div></header>
+    <div class="workspace"><header class="topbar"><div class="breadcrumb">工作空间 <span>/</span> <strong id="page-title">首页</strong></div></header>
       <main><p id="notice" class="notice" role="status" hidden></p><div id="view-overview" class="view">
-<section class="page-heading"><div><span class="eyebrow">NETWORK</span><h2>网络总览</h2><p>网关状态与在线节点概况。</p></div></section>
+<section class="page-heading"><div><span class="eyebrow">HOME</span><h2>首页</h2><p>网关状态与在线节点概况。</p></div></section>
 <section class="metrics" aria-label="网关状态">
           <article class="metric"><div class="metric-label">在线节点 <span class="metric-icon mint">◉</span></div><div class="metric-value"><span id="online-count">—</span><small id="capacity">/ —</small></div><p>当前连接到此网关的设备</p></article>
           <article class="metric"><div class="metric-label">运行时间 <span class="metric-icon blue">◷</span></div><div id="uptime" class="metric-value">—</div><p>本次网关进程持续运行</p></article>
@@ -63,7 +63,7 @@
 </div>
 
 <div id="view-sdwan" class="view" hidden>
-  <section class="page-heading"><div><h1>SD-WAN</h1><p>为同一网络中的设备分配虚拟 IPv4 地址，并选择要共享的局域网子网。</p></div></section>
+  <section class="page-heading"><div><h1>组网</h1><p>为同一网络中的设备分配虚拟 IPv4 地址，并选择要共享的局域网子网。</p></div></section>
   <section class="panel">
     <form id="sdwan-form" class="panel-body">
       <fieldset id="sdwan-fields" class="sdwan-fields" disabled>
