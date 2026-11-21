@@ -1,16 +1,17 @@
 #!/bin/sh
-# macOS per-user installer. The gateway provides the manifest and public CA.
+# macOS system installer. The gateway provides the manifest and public CA.
 set -eu
 umask 077
 
 fail() { printf '%s\n' "fastp2p: $*" >&2; exit 1; }
 [ "$#" -eq 0 ] || fail '请用 sh 加下载文件名执行，无需传入 Token。'
 [ "$(uname -s)" = Darwin ] || fail '请在 macOS 上运行此脚本。'
-uid=$(id -u)
-[ "$uid" -ne 0 ] || fail '请在 Mac 的终端以当前登录用户运行，无需 sudo。'
-case "$HOME" in /*) ;; *) fail '找不到当前用户的主目录。' ;; esac
+if [ "$(id -u)" -ne 0 ]; then
+    case "$0" in /*) script=$0 ;; *) script=$PWD/$0 ;; esac
+    exec sudo -- sh "$script"
+fi
 
-for tool in awk curl cmp mktemp shasum sw_vers sysctl launchctl plutil; do
+for tool in awk curl mktemp shasum sw_vers sysctl launchctl; do
     command -v "$tool" >/dev/null 2>&1 || fail "缺少必要命令：$tool"
 done
 release=$(sw_vers -productVersion)
@@ -35,72 +36,32 @@ if [ -z "$token" ]; then
     END { if(n==1) print key; else exit 1 }') || fail '文件名必须包含一个有效的 16 位 Token，请从控制台重新下载。'
 fi
 
-app=$HOME/Library/Application\ Support/fastp2p
-agents=$HOME/Library/LaunchAgents
-binary=$app/fastp2p
-profile=$app/client.json
-plist=$agents/top.fastp2p.plist
-domain=gui/$uid
-service=$domain/top.fastp2p
-lock=$app/.install.lock
+prefix=/usr/local/fastp2p
+binary=$prefix/bin/fastp2p
+config_dir=/etc/fastp2p
+profile=$config_dir/config.conf
+plist=/Library/LaunchDaemons/top.fastp2p.plist
+service=system/top.fastp2p
+lock=/var/run/fastp2p-macos-install.lock
 locked=false
 installing=false
-was_loaded=false
+config_created=false
+stage=
 work=$(mktemp -d /tmp/fastp2p-macos-install.XXXXXXXX)
-
-rollback() {
-    loaded=false
-    launchctl print "$service" >/dev/null 2>&1 && loaded=true
-    changed=false
-    index=0
-    for path in "$binary" "$profile" "$plist"; do
-        index=$((index + 1))
-        backup=$work/previous/$index
-        if [ -f "$backup" ]; then
-            cmp -s "$backup" "$path" || changed=true
-        elif [ -e "$path" ] || [ -L "$path" ]; then
-            changed=true
-        fi
-    done
-    if ! $changed && [ "$loaded" = "$was_loaded" ]; then return 0; fi
-    if $loaded; then
-        launchctl bootout "$service" || return 1
-    fi
-    index=0
-    for path in "$binary" "$profile" "$plist"; do
-        index=$((index + 1))
-        backup=$work/previous/$index
-        if [ -f "$backup" ]; then
-            replacement=$(mktemp "$path.restore.XXXXXXXX") || return 1
-            if ! cp -p "$backup" "$replacement" || ! mv -f "$replacement" "$path"; then
-                rm -f "$replacement"
-                return 1
-            fi
-        else
-            rm -f "$path" || return 1
-        fi
-    done
-    if $was_loaded; then launchctl bootstrap "$domain" "$plist" || return 1; fi
-}
-
 cleanup() {
     status=$?
-    trap - EXIT HUP INT TERM
     set +e
-    keep_backup=false
-    if [ "$status" -ne 0 ] && $installing; then
-        if rollback; then
-            printf '%s\n' '已恢复安装前的状态。' >&2
-        else
-            keep_backup=true
-            printf '恢复未完成。安装前的文件保存在 %s/previous\n' "$work" >&2
-        fi
+    if $installing && [ "$status" -ne 0 ]; then
+        launchctl bootout "$service" >/dev/null 2>&1
+        rm -f -- "$plist" "$binary"
+        if $config_created; then rm -f -- "$profile" "$profile.previous" "$profile.identity" "$profile".ca.*.pem; fi
+    fi
+    if [ -n "$stage" ]; then rm -f -- "$stage/fastp2p"; rmdir "$stage"; fi
+    if $installing && [ "$status" -ne 0 ]; then
+        rmdir "$prefix/bin" "$prefix" "$config_dir" 2>/dev/null
     fi
     if $locked; then rmdir "$lock"; fi
-    rm -f "$work/download.conf" "$work/token"
-    if ! $keep_backup; then
-        case "$work" in /tmp/fastp2p-macos-install.*) rm -rf "$work" ;; esac
-    fi
+    case "$work" in /tmp/fastp2p-macos-install.*) rm -rf -- "$work" ;; esac
     exit "$status"
 }
 trap cleanup EXIT
@@ -108,8 +69,13 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+mkdir "$lock" 2>/dev/null || fail '已有安装正在进行。'
+locked=true
+if [ -e "$plist" ] || [ -L "$plist" ] || [ -e "$binary" ] || [ -L "$binary" ] ||
+   launchctl print "$service" >/dev/null 2>&1; then
+    fail '请先卸载已有 FastP2P 系统服务。'
+fi
 @@FASTP2P_DOWNLOAD@@
-launchctl print "$domain" >/dev/null 2>&1 || fail '请登录 macOS 桌面，在终端中运行此脚本。'
 url=$gateway_url/api/v1/update/download?platform=$package_platform\&version=$expected_version
 printf '正在下载 %s 客户端 %s…\n' "$arch" "$expected_version"
 printf 'header = "Authorization: FastP2P %s"\n' "$token" > "$work/download.conf"
@@ -127,38 +93,51 @@ chmod 700 "$work/fastp2p"
 version=$("$work/fastp2p" --version) || fail "客户端无法在 $arch 上运行。"
 case "$version" in "fastp2p $expected_version ABI "*) ;; *) fail '安装包版本不符。' ;; esac
 
-[ ! -L "$app" ] && [ ! -L "$agents" ] || fail '配置或登录启动项目录不能是符号链接。'
-mkdir -p "$app"
-mkdir "$lock" 2>/dev/null || fail "已有安装正在进行，请检查 ${lock}。"
-locked=true
-mkdir "$work/previous"
-[ ! -L "$plist" ] || fail '登录启动项不能是符号链接。'
-if [ -f "$plist" ]; then
-    installed_profile=$(plutil -extract ProgramArguments.3 raw -o - "$plist") ||
-        fail '无法读取现有登录启动项的配置路径。'
-    case "$installed_profile" in /*) profile=$installed_profile ;; *) fail '现有配置路径必须是绝对路径。' ;; esac
-fi
-[ "$profile" != "$binary" ] && [ "$profile" != "$plist" ] || fail '现有配置路径和安装文件冲突。'
-index=0
-for path in "$binary" "$profile" "$plist"; do
-    index=$((index + 1))
-    [ ! -L "$path" ] || fail "安装文件不能是符号链接：$path"
-    if [ -e "$path" ]; then
-        [ -f "$path" ] || fail "安装路径已被其他类型的文件占用：$path"
-        cp -p "$path" "$work/previous/$index"
-    fi
+[ "$("$work/fastp2p" --service-profile)" = "$profile" ] ||
+    fail '安装包使用旧目录，请先同步新版客户端。'
+for path in /usr/local "$prefix" "$prefix/bin" "$config_dir"; do
+    if [ ! -e "$path" ] && [ ! -L "$path" ]; then mkdir -m 755 "$path"; fi
+    [ ! -L "$path" ] && [ -d "$path" ] &&
+        ls -ldn "$path" | awk '$3 == 0 && substr($1,6,1) != "w" && substr($1,9,1) != "w" {ok=1} END {exit !ok}' ||
+        fail "目录必须由 root 持有且禁止其他用户写入：$path"
 done
-if launchctl print "$service" >/dev/null 2>&1; then
-    [ -f "$plist" ] || fail '已加载的服务缺少 LaunchAgent 文件，无法备份。'
-    was_loaded=true
-fi
-
-printf '%s' "$token" > "$work/token"
-unset token
+[ ! -L "$profile" ] || fail '配置不能是符号链接。'
+stage=$(mktemp -d "$prefix/.install.XXXXXXXX")
+cp "$work/fastp2p" "$stage/fastp2p" && chmod 755 "$stage/fastp2p" || fail '暂存程序失败。'
 installing=true
-printf '%s\n' '正在验证网关并注册登录启动项…'
-FASTP2P_BOOTSTRAP_FILE="$work/gateway.json" "$work/fastp2p" install --token-file "$work/token" --config "$profile" ||
-    fail '安装未完成，请查看上方错误。'
-launchctl print "$service" >/dev/null 2>&1 || fail '无法确认 LaunchAgent 已注册。'
+if [ ! -e "$profile" ]; then
+    config_created=true
+    printf '%s' "$token" > "$work/token"
+    FASTP2P_BOOTSTRAP_FILE="$work/gateway.json" "$stage/fastp2p" install \
+        --token-file "$work/token" --config "$profile" --no-service || fail '网关校验失败。'
+    rm -f "$work/token"
+fi
+unset token
+"$stage/fastp2p" run --config "$profile" --verify-start || fail '客户端启动检查失败。'
+mv "$stage/fastp2p" "$binary"
+mkdir -p /Library/LaunchDaemons
+cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>top.fastp2p</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$binary</string><string>run</string>
+        <string>--config</string><string>$profile</string><string>--background</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+</dict>
+</plist>
+EOF
+chmod 644 "$plist"
+launchctl enable "$service"
+launchctl bootstrap system "$plist"
+for check in 1 2 3; do
+    sleep 1
+    launchctl print "$service" | grep -q 'state = running' || fail '系统服务未持续运行。'
+done
 installing=false
-printf 'fastp2p %s 已安装。当前用户登录后会自动启动。\n' "$expected_version"
+printf 'FastP2P %s 已安装为开机启动的系统服务。\n' "$expected_version"

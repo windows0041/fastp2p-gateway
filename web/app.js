@@ -451,7 +451,7 @@
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       if (update.platform === 'android') text('update-message', '安装 APK 后，请在手机浏览器点「打开 FastP2P 并接入」。');
       else if (update.platform.startsWith('linux')) text('update-message', '执行 sh ' + filename[1] + '（也可用 bash）。脚本自动识别 CPU，从本网关下载对应程序，保留节点身份与配置，安装到 /usr/local/fastp2p 并设置开机启动。需要 curl 或 GNU wget，请勿修改文件名中的 Token。');
-      else if (update.platform === 'macos') text('update-message', '在 Mac 的终端执行 sh ' + filename[1] + '。脚本会自动选择 Apple Silicon 或 Intel 版本，保留节点身份和配置，并设置当前用户登录后启动。请保留文件名，无需 sudo。');
+      else if (update.platform === 'macos') text('update-message', '在 Mac 的终端执行 sh ' + filename[1] + '。脚本会自动选择 Apple Silicon 或 Intel 版本，按提示授权后注册开机启动服务。请保留文件名。');
     } catch (error) {
       $('update-message').classList.add('error');
       text('update-message', error.message);
@@ -791,7 +791,7 @@
     const platform = state.installPlatform;
     const notes = {
       windows: '在 PowerShell 中运行，按提示确认管理员权限。',
-      macos: '在 macOS 13 或更新版本的终端中，用当前登录用户运行。',
+      macos: '在 macOS 13 或更新版本的终端中运行，按提示授权管理员权限。',
       linux: '在 Linux 终端中运行，按提示使用 sudo。使用 GNU wget 时，可用 wget -qO- 代替 curl -fsSL。',
       android: '在手机上下载并安装 APK，然后回到此页点「打开 FastP2P 并接入」。'
     };

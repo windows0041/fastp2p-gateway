@@ -98,7 +98,7 @@ docker build -t fastp2p-gateway:local .
 & ([ScriptBlock]::Create((Invoke-WebRequest -UseBasicParsing 'https://fastp2p.top:10008/windows/install.ps1').Content)) -Token 'xxxx'
 ```
 
-macOS 用当前登录用户运行，Linux 脚本会在需要时调用 `sudo`。
+macOS 和 Linux 脚本会在需要时调用 `sudo`。
 
 ```sh
 curl -fsSL https://fastp2p.top:10008/macos/install | bash -s -- --token xxxx
@@ -113,9 +113,9 @@ Linux 也可使用 GNU wget 执行 `wget -qO- https://fastp2p.top:10008/linux/in
 
 默认 Linux 安装脚本使用最近一次成功同步的版本及更新的包。官方客户端当前提供 x86_64、aarch64、armv7、riscv64 和 mips64el。缺少本机架构时，脚本会列出可用架构并在改动服务前退出。
 
-OpenWrt 和 ImmortalWrt 使用 procd 管理服务，需要 2.0.21 或更新的客户端。配置和证书写入持久目录 `/etc/fastp2p-client/config`。升级时会读取现有配置并保留设备身份。
+OpenWrt 和 ImmortalWrt 使用 procd，其他受支持的 Linux 使用 systemd 或 OpenRC。程序、配置和日志分别位于 `/usr/local/fastp2p/bin/fastp2p`、`/etc/fastp2p/config.conf` 和 `/tmp/fastp2p/fastp2p.log`。
 
-「安装客户端 → Mac」提供一个通用脚本，接口为 `GET /api/v1/update/install?platform=macos`。支持 macOS 13 及以上，自动选择 Apple Silicon `arm64` 或 Intel `x86_64`。保留下载文件名，在已登录 macOS 桌面的当前用户终端中执行 `sh ./fastp2p-macos-<16位数字>.sh`，无需 sudo。网关生成的脚本固定下载时的安装包版本、长度、SHA-256 和公开 CA。客户端验证网关后保留已有身份和配置，并注册用户级 LaunchAgent，随登录启动。带版本的原始包下载和远程升级继续按架构提供。
+「安装客户端 → Mac」提供 macOS 13 及以上的通用脚本，自动选择 Apple Silicon 或 Intel 版本。保留文件名，在终端执行 `sh ./fastp2p-macos-<16位数字>.sh`，并按提示授权管理员权限。程序、配置和日志使用与 Linux 相同的目录，LaunchDaemon 随系统启动。旧布局的客户端需先卸载，再安装并重新接入。
 
 网关 2.0.7 内置的 Linux 安装脚本在新程序验证启动成功后清理历史程序副本，保留配置、证书和诊断日志。客户端 2.0.5 同时处理远程升级后的旧可执行文件及已退出升级进程留下的临时程序；安装失败仍保留回滚所需文件。
 
