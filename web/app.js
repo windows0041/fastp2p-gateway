@@ -833,7 +833,7 @@
   for (const item of navItems)
     item.addEventListener('click', () => { location.hash = '#/' + item.dataset.view; });
 
-  const sdwanStates = {offline: '离线，待上线', unsupported: '客户端待升级', queued: '等待应用',
+  const sdwanStates = {offline: '离线，待上线', unsupported: '客户端暂不支持 SD-WAN', queued: '等待应用',
     saved: '已保存，等待应用或授权', applied: '已应用', failed: '客户端应用失败'};
   let sdwanRequest = 0, sdwanRow = 0, sdwanSaving = false;
 
