@@ -113,7 +113,7 @@ Linux 也可使用 GNU wget 执行 `wget -qO- https://fastp2p.top:10008/linux/in
 
 默认 Linux 安装脚本使用最近一次成功同步的版本及更新的包。官方客户端当前提供 x86_64、aarch64、armv7、riscv64 和 mips64el。缺少本机架构时，脚本会列出可用架构并在改动服务前退出。
 
-OpenWrt 和 ImmortalWrt 使用 procd，其他受支持的 Linux 使用 systemd 或 OpenRC。程序、配置和日志分别位于 `/usr/local/fastp2p/bin/fastp2p`、`/etc/fastp2p/config.conf` 和 `/tmp/fastp2p/fastp2p.log`。
+OpenWrt 和 ImmortalWrt 使用 procd，其他受支持的 Linux 使用 systemd 或 OpenRC。程序、配置和日志分别位于 `/usr/local/fastp2p/fastp2p`、`/etc/fastp2p/config.conf` 和 `/tmp/fastp2p/fastp2p.log`。
 
 「安装客户端 → Mac」提供 macOS 13 及以上的通用脚本，自动选择 Apple Silicon 或 Intel 版本。保留文件名，在终端执行 `sh ./fastp2p-macos-<16位数字>.sh`，并按提示授权管理员权限。程序、配置和日志使用与 Linux 相同的目录，LaunchDaemon 随系统启动。旧布局的客户端需先卸载，再安装并重新接入。
 

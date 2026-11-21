@@ -85,6 +85,12 @@ elif tool == 'fastp2p':
     if args == ['--service-profile']:
         print(config)
         sys.exit(0)
+    if args == ['--service-executable']:
+        install = fixtures / 'usr/local/fastp2p'
+        if os.environ.get('FAILURE') == 'legacy-layout':
+            install /= 'bin'
+        print(install / 'fastp2p')
+        sys.exit(0)
     if args == ['run', '--config', str(config), '--verify-start']:
         assert json.loads(config.read_text())['installed']
         sys.exit(0)
@@ -107,7 +113,7 @@ class MacInstaller(unittest.TestCase):
         directory = tempfile.TemporaryDirectory(prefix='fastp2p-macos-test.')
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
-        self.binary = self.root / 'usr/local/fastp2p/bin/fastp2p'
+        self.binary = self.root / 'usr/local/fastp2p/fastp2p'
         self.profile = self.root / 'etc/fastp2p/config.conf'
         self.plist = self.root / 'Library/LaunchDaemons/top.fastp2p.plist'
         for folder in ('usr', 'etc', 'var/run'):
@@ -158,6 +164,7 @@ class MacInstaller(unittest.TestCase):
             str(self.binary), 'run', '--config', str(self.profile), '--background'])
         self.assertTrue(unit['RunAtLoad'] and unit['KeepAlive'])
         self.assertTrue(self.profile.is_file())
+        self.assertFalse((self.binary.parent/'bin').exists())
 
     def test_rosetta_and_existing_service(self):
         result = self.run_installer(APPLE_SILICON='1')
@@ -170,7 +177,8 @@ class MacInstaller(unittest.TestCase):
         self.assertTrue((self.root / 'loaded').exists())
 
     def test_bad_hash_and_missing_arch_do_not_install(self):
-        for result in (self.run_installer(('arm64',)), self.run_installer(FAILURE='checksum')):
+        for result in (self.run_installer(('arm64',)), self.run_installer(FAILURE='checksum'),
+                       self.run_installer(FAILURE='legacy-layout')):
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(any(path.exists() for path in (self.profile, self.plist, self.binary)))
             self.assertFalse((self.root / 'var/run/fastp2p-macos-install.lock').exists())

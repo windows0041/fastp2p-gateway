@@ -37,7 +37,7 @@ if [ -z "$token" ]; then
 fi
 
 prefix=/usr/local/fastp2p
-binary=$prefix/bin/fastp2p
+binary=$prefix/fastp2p
 config_dir=/etc/fastp2p
 profile=$config_dir/config.conf
 plist=/Library/LaunchDaemons/top.fastp2p.plist
@@ -58,7 +58,7 @@ cleanup() {
     fi
     if [ -n "$stage" ]; then rm -f -- "$stage/fastp2p"; rmdir "$stage"; fi
     if $installing && [ "$status" -ne 0 ]; then
-        rmdir "$prefix/bin" "$prefix" "$config_dir" 2>/dev/null
+        rmdir "$prefix" "$config_dir" 2>/dev/null
     fi
     if $locked; then rmdir "$lock"; fi
     case "$work" in /tmp/fastp2p-macos-install.*) rm -rf -- "$work" ;; esac
@@ -93,9 +93,10 @@ chmod 700 "$work/fastp2p"
 version=$("$work/fastp2p" --version) || fail "客户端无法在 $arch 上运行。"
 case "$version" in "fastp2p $expected_version ABI "*) ;; *) fail '安装包版本不符。' ;; esac
 
-[ "$("$work/fastp2p" --service-profile)" = "$profile" ] ||
+[ "$("$work/fastp2p" --service-profile)" = "$profile" ] &&
+    [ "$("$work/fastp2p" --service-executable 2>/dev/null)" = "$binary" ] ||
     fail '安装包使用旧目录，请先同步新版客户端。'
-for path in /usr/local "$prefix" "$prefix/bin" "$config_dir"; do
+for path in /usr/local "$prefix" "$config_dir"; do
     if [ ! -e "$path" ] && [ ! -L "$path" ]; then mkdir -m 755 "$path"; fi
     [ ! -L "$path" ] && [ -d "$path" ] &&
         ls -ldn "$path" | awk '$3 == 0 && substr($1,6,1) != "w" && substr($1,9,1) != "w" {ok=1} END {exit !ok}' ||
