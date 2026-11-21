@@ -3,7 +3,6 @@
 #include <string.h>
 
 #define SDWAN_DEFAULT "10.3.2.0/24"
-#define SDWAN_MAX_MEMBERS 33
 #define SDWAN_MAX_ROUTES 128
 
 static const char *text(json_object *object, const char *key) {
@@ -68,8 +67,11 @@ json_object *gw_store_sdwan(sqlite3 *db, sqlite3_int64 owner) {
         json_object_object_add(plan, "members", json_object_new_array());
     }
     sqlite3_finalize(s);
-    if (json_object_is_type(gw_get(plan, "members"), json_type_array))
+    if (json_object_is_type(gw_get(plan, "members"), json_type_array)) {
+        if (!*text(plan, "mode"))
+            gw_js(plan, "mode", "mesh");
         return plan;
+    }
     if (plan)
         json_object_put(plan);
     return NULL;
@@ -80,11 +82,23 @@ static const char *validate(sqlite3 *db, sqlite3_int64 owner, json_object *plan)
     unsigned bits;
     json_object *members = gw_get(plan, "members");
     if (!json_object_is_type(members, json_type_array) ||
-        json_object_array_length(members) > SDWAN_MAX_MEMBERS)
+        json_object_array_length(members) > GW_SDWAN_MAX_MEMBERS)
         return "invalid SD-WAN member list";
+    json_object *mode_value, *center_value;
+    const char *mode = text(plan, "mode"), *center = text(plan, "center");
+    if (json_object_object_get_ex(plan, "mode", &mode_value) &&
+        strcmp(mode, "mesh") && strcmp(mode, "central"))
+        return "invalid SD-WAN topology mode";
+    if (!strcmp(mode, "central") &&
+        (json_object_array_length(members) < 2 ||
+         (json_object_object_get_ex(plan, "center", &center_value) &&
+          (!json_object_is_type(center_value, json_type_string) ||
+           strlen(center) != (size_t)json_object_get_string_len(center_value))) ||
+         (*center && member_index(members, center) < 0)))
+        return "the SD-WAN center must be a network member";
     if (prefix(text(plan, "subnet"), &subnet, &bits) || bits > 30)
         return "invalid SD-WAN IPv4 subnet";
-    uint32_t mask = netmask(bits), addresses[SDWAN_MAX_MEMBERS];
+    uint32_t mask = netmask(bits), addresses[GW_SDWAN_MAX_MEMBERS];
     struct { uint32_t network; unsigned bits; } exports[SDWAN_MAX_ROUTES];
     size_t count = json_object_array_length(members), exported = 0;
     for (size_t i = 0; i < count; ++i) {
@@ -149,6 +163,8 @@ static int project(sqlite3 *db, json_object *plan) {
         json_object *profile = NULL;
         if (count > 1) {
             profile = json_object_new_object();
+            gw_js(profile, "Mode", text(plan, "mode"));
+            gw_js(profile, "Center", text(plan, "activeCenter"));
             gw_js(profile, "Subnet", text(plan, "subnet"));
             gw_js(profile, "Address", text(member, "address"));
             json_object_object_add(profile, "LocalRoutes", json_object_get(gw_get(member, "routes")));
@@ -199,6 +215,8 @@ const char *gw_store_sdwan_put(sqlite3 *db, sqlite3_int64 owner, json_object *pl
         goto done;
     normalized = json_object_new_object();
     gw_js(normalized, "subnet", text(plan, "subnet"));
+    int central = !strcmp(text(plan, "mode"), "central");
+    gw_js(normalized, "mode", central ? "central" : "mesh");
     json_object *members = gw_get(plan, "members");
     json_object *new_members = json_object_new_array();
     json_object_object_add(normalized, "members", new_members);
@@ -208,6 +226,15 @@ const char *gw_store_sdwan_put(sqlite3 *db, sqlite3_int64 owner, json_object *pl
         gw_js(member, "address", text(input, "address"));
         json_object_object_add(member, "routes", json_object_get(gw_get(input, "routes")));
         json_object_array_add(new_members, member);
+    }
+    if (central) {
+        const char *center = text(plan, "center");
+        const char *active = text(old, "activeCenter");
+        if (strcmp(text(old, "mode"), "central") || strcmp(center, text(old, "center")) ||
+            (*active && member_index(new_members, active) < 0))
+            active = center;
+        gw_js(normalized, "center", center);
+        gw_js(normalized, "activeCenter", active);
     }
     members = gw_get(old, "members");
     for (size_t i = 0; i < json_object_array_length(members); ++i) {
@@ -229,6 +256,25 @@ done:
     return error;
 }
 
+int gw_store_sdwan_elect(sqlite3 *db, sqlite3_int64 owner, const char *center) {
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK)
+        return -1;
+    json_object *plan = gw_store_sdwan(db, owner);
+    int result = -1;
+    if (plan && !strcmp(text(plan, "mode"), "central") &&
+        (!*center || member_index(gw_get(plan, "members"), center) >= 0)) {
+        gw_js(plan, "activeCenter", center);
+        if (!project(db, plan) && !save(db, owner, plan) &&
+            sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK)
+            result = 0;
+    }
+    if (plan)
+        json_object_put(plan);
+    if (result)
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    return result;
+}
+
 /* Called inside the device rename/delete transaction. */
 int gw_store_sdwan_rebind(sqlite3 *db, sqlite3_int64 owner, const char *old_name, const char *new_name) {
     json_object *plan = gw_store_sdwan(db, owner);
@@ -241,6 +287,15 @@ int gw_store_sdwan_rebind(sqlite3 *db, sqlite3_int64 owner, const char *old_name
             gw_js(json_object_array_get_idx(members, (size_t)index), "node", new_name);
         else
             json_object_array_del_idx(members, (size_t)index, 1);
+        if (!strcmp(text(plan, "center"), old_name))
+            gw_js(plan, "center", new_name ? new_name : "");
+        if (!strcmp(text(plan, "activeCenter"), old_name))
+            gw_js(plan, "activeCenter", new_name ? new_name : "");
+        if (json_object_array_length(members) < 2) {
+            gw_js(plan, "mode", "mesh");
+            json_object_object_del(plan, "center");
+            json_object_object_del(plan, "activeCenter");
+        }
         result = project(db, plan) || save(db, owner, plan);
     }
     json_object_put(plan);

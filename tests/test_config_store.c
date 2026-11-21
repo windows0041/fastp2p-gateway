@@ -23,11 +23,22 @@ static void sdwan_members_follow_device_lifecycle(sqlite3 *db) {
     json_object_put(stored);
     gw_js(json_object_array_get_idx(members, 1), "node", "mesh-node-b");
     assert(!gw_store_sdwan_put(db, 1, graph));
+    stored = gw_store_sdwan(db, 1);
+    assert(!strcmp(gw_string(stored, "mode"), "mesh"));
+    json_object_put(stored);
+    gw_js(graph, "mode", "central");
+    gw_js(graph, "center", "mesh-node-b");
+    assert(!gw_store_sdwan_put(db, 1, graph));
+    assert(gw_store_sdwan_elect(db, 1, "outside-node"));
+    assert(!gw_store_sdwan_elect(db, 1, "mesh-node-a"));
+    assert(!gw_store_sdwan_put(db, 1, graph)); /* Saving the same preference retains the elected center. */
     assert(!gw_store_rename(db, 1, "mesh-node-a", "mesh-renamed"));
     stored = gw_store_config(db, "mesh-node-b");
     json_object *profile = gw_get(gw_get(stored, "fields"), "sdwan");
     json_object *peer = json_object_array_get_idx(gw_get(profile, "Peers"), 0);
     assert(!strcmp(gw_string(peer, "Node"), "mesh-renamed"));
+    assert(!strcmp(gw_string(profile, "Mode"), "central"));
+    assert(!strcmp(gw_string(profile, "Center"), "mesh-renamed"));
     json_object_put(stored);
     assert(!gw_store_delete_offline(db, "mesh-renamed"));
     stored = gw_store_config(db, "mesh-node-b");

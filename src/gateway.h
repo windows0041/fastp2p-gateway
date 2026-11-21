@@ -6,6 +6,7 @@
 #include <netinet/in.h>
 #include <stdio.h>
 #define GW_MAX_NODES 256
+#define GW_SDWAN_MAX_MEMBERS 33
 #define GW_ADMIN_OWNER 1
 #define GW_MAX_PROBES 128
 #define GW_HTTP_LIMIT (64u * 1024u)
@@ -42,12 +43,20 @@ struct packet {
     size_t length, offset;
     unsigned char data[];
 };
+struct sdwan_link {
+    char peer[32], relay[32];
+    unsigned state, family;
+};
 struct connection {
     struct lws *wsi;
     int slot, registered, closing, config_supported, sdwan_supported, restart_supported, rename_supported;
     char node[32], ip[64], ipv6[128], os[128], mac[128], lan[64], version[64];
     char probed_ipv4[INET_ADDRSTRLEN];
     uint64_t id, last_rx, relay_time, active_wall;
+    unsigned sdwan_topology, sdwan_link_count, sdwan_central;
+    uint64_t sdwan_report_at, sdwan_election_at;
+    char sdwan_center[32];
+    struct sdwan_link *sdwan_links;
     sqlite3_int64 owner;
     uint64_t install_token;
     uint64_t last_seen_wall, next_store;

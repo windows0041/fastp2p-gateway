@@ -67,8 +67,14 @@
   <section class="panel">
     <form id="sdwan-form" class="panel-body">
       <fieldset id="sdwan-fields" class="sdwan-fields" disabled>
-        <label for="sdwan-subnet">虚拟网段</label>
-        <input id="sdwan-subnet" value="10.3.2.0/24" maxlength="18" required spellcheck="false">
+        <div class="sdwan-settings">
+          <div><label for="sdwan-subnet">虚拟网段</label>
+            <input id="sdwan-subnet" value="10.3.2.0/24" maxlength="18" required spellcheck="false"></div>
+          <div><label for="sdwan-mode">组网模式</label>
+            <select id="sdwan-mode"><option value="mesh">P2P Mesh</option><option value="central">中心节点</option></select></div>
+          <div id="sdwan-center-field" hidden><label for="sdwan-center">首选中心节点</label>
+            <select id="sdwan-center"></select></div>
+        </div>
         <div class="sdwan-heading"><h2>网络成员</h2><button id="sdwan-add" class="button" type="button">＋ 添加设备</button></div>
         <div id="sdwan-members"></div>
         <datalist id="sdwan-node-names"></datalist>
@@ -78,6 +84,18 @@
       <p id="sdwan-message" class="form-help" role="status"></p>
       <p id="sdwan-error" class="form-error" role="alert" hidden></p>
     </form>
+  </section>
+  <section id="sdwan-links-panel" class="panel sdwan-links-panel" hidden>
+    <div class="panel-heading"><h2>链路状态</h2></div>
+    <div class="panel-body">
+      <p id="sdwan-current-center" class="muted" hidden></p>
+      <div id="sdwan-link-table" class="table-scroll" hidden>
+        <table class="sdwan-link-table">
+          <thead><tr><th scope="col">设备</th><th scope="col">对端设备</th><th scope="col">隧道状态</th></tr></thead>
+          <tbody id="sdwan-links"></tbody>
+        </table>
+      </div>
+    </div>
   </section>
 </div>
 

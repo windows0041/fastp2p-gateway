@@ -77,6 +77,7 @@ int gw_store_config_put(sqlite3 *db,const char *node,json_object *fields);
 int gw_store_config_patch(sqlite3 *db, const char *node, json_object *fields);
 json_object *gw_store_sdwan(sqlite3 *db, sqlite3_int64 owner);
 const char *gw_store_sdwan_put(sqlite3 *db, sqlite3_int64 owner, json_object *plan);
+int gw_store_sdwan_elect(sqlite3 *db, sqlite3_int64 owner, const char *center);
 int gw_store_sdwan_rebind(sqlite3 *db, sqlite3_int64 owner, const char *old_name, const char *new_name);
 int gw_store_config_ack(sqlite3 *db,const char *node,uint64_t revision,const char *state);
 int gw_store_config_rules(sqlite3 *db,const char *node);

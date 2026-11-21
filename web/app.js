@@ -834,11 +834,20 @@
     item.addEventListener('click', () => { location.hash = '#/' + item.dataset.view; });
 
   const sdwanStates = {offline: '离线，待上线', unsupported: '客户端暂不支持 SD-WAN', queued: '等待应用',
-    saved: '已保存，等待应用或授权', applied: '已应用', failed: '客户端应用失败'};
+    saved: '已保存，等待应用或授权', applied: '已应用', failed: '客户端应用失败', upgrade: '客户端待升级'};
+  const sdwanLinkStates = {offline: '设备离线', upgrade: '等待客户端升级', unknown: '等待链路上报',
+    connecting: '连接中', direct: '直连', relay: '中继', mixed: '双向路径不同'};
   let sdwanRequest = 0, sdwanRow = 0, sdwanSaving = false;
 
   function sdwanMembers() {
     return Array.from($('sdwan-members').children);
+  }
+  function updateSdwanCenter(selected = $('sdwan-center').value) {
+    const names = new Set(sdwanMembers().map(row => row.querySelector('[name="node"]').value.trim()).filter(Boolean));
+    $('sdwan-center').replaceChildren(new Option('自动选择（按 NAT 等级）', ''),
+      ...Array.from(names, name => new Option(name, name)));
+    $('sdwan-center').value = names.has(selected) ? selected : '';
+    $('sdwan-center-field').hidden = $('sdwan-mode').value !== 'central';
   }
   function renderSdwanStatus(plan) {
     const states = new Map(plan.members.map(member => [member.node, member.state]));
@@ -846,6 +855,23 @@
       const value = row.querySelector('[name="node"]').value.trim();
       row.querySelector('[data-status]').textContent = sdwanStates[states.get(value)] || '';
     }
+    const links = plan.links || [];
+    const central = plan.mode === 'central';
+    $('sdwan-links-panel').hidden = plan.members.length < 2;
+    $('sdwan-current-center').hidden = !central;
+    $('sdwan-link-table').hidden = links.length === 0;
+    if (central) text('sdwan-current-center', plan.activeCenter
+      ? '当前中心节点：' + plan.activeCenter + '。成员之间的流量经中心转发。'
+      : '正在等待可用的中心节点。');
+    const rows = links.map(link => {
+      const row = element('tr');
+      let status = sdwanLinkStates[link.state] || sdwanLinkStates.unknown;
+      if (link.state === 'direct' && link.family) status = 'IPv' + link.family + ' 直连';
+      if (link.state === 'relay' && link.relay) status += ' · ' + link.relay;
+      row.append(element('td', null, link.a), element('td', null, link.b), element('td', null, status));
+      return row;
+    });
+    $('sdwan-links').replaceChildren(...rows);
   }
   function addSdwanRow(member = {}) {
     const row = element('div', 'sdwan-member');
@@ -863,7 +889,10 @@
       input.name = name; input.placeholder = hint; input.value = value;
       input.required = name !== 'routes'; input.spellcheck = false; input.autocomplete = 'off';
       input.maxLength = name === 'routes' ? 2304 : name === 'node' ? 31 : 15;
-      if (name === 'node') input.setAttribute('list', 'sdwan-node-names');
+      if (name === 'node') {
+        input.setAttribute('list', 'sdwan-node-names');
+        input.addEventListener('input', () => updateSdwanCenter());
+      }
       field.append(label, input);
       fields.append(field);
     }
@@ -872,7 +901,10 @@
     status.setAttribute('data-status', '');
     const remove = element('button', 'link-button', '移除');
     remove.type = 'button';
-    remove.addEventListener('click', () => row.remove());
+    remove.addEventListener('click', () => {
+      row.remove();
+      updateSdwanCenter();
+    });
     actions.append(status, remove);
     row.append(fields, actions);
     $('sdwan-members').append(row);
@@ -893,11 +925,14 @@
       $('sdwan-node-names').replaceChildren(...state.nodes.map(node => new Option(node.name)));
       if (replace) {
         $('sdwan-subnet').value = plan.subnet;
+        $('sdwan-mode').value = plan.mode === 'central' ? 'central' : 'mesh';
         $('sdwan-members').replaceChildren();
         for (const member of plan.members) addSdwanRow(member);
+        updateSdwanCenter(plan.center || '');
         text('sdwan-message', '');
         $('sdwan-fields').disabled = false;
-      } else renderSdwanStatus(plan);
+      }
+      renderSdwanStatus(plan);
     } catch (error) {
       if (replace && current()) {
         text('sdwan-message', '');
@@ -906,6 +941,7 @@
       }
     }
   }
+  $('sdwan-mode').addEventListener('change', () => updateSdwanCenter());
   $('sdwan-add').addEventListener('click', () => {
     if (sdwanMembers().length < 33) addSdwanRow().querySelector('input').focus();
   });
@@ -923,7 +959,11 @@
     $('sdwan-fields').disabled = true;
     $('sdwan-error').hidden = true;
     try {
-      const plan = await api('/api/v1/sdwan', {subnet: $('sdwan-subnet').value.trim(), members});
+      const mode = $('sdwan-mode').value;
+      const plan = await api('/api/v1/sdwan', {
+        subnet: $('sdwan-subnet').value.trim(), mode, members,
+        center: mode === 'central' ? $('sdwan-center').value : ''
+      });
       if (state.token !== token || location.hash !== '#/sdwan') return;
       renderSdwanStatus(plan);
       text('sdwan-message', '配置已保存。请查看各设备的应用状态。');

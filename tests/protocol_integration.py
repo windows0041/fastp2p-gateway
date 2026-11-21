@@ -446,6 +446,44 @@ try:
         auto_b=WS('auto-fixture',device='2'*32,hostname='renamed-host');assert auto_b.name==auto_name
         results['automatic_identity_names_unique_reserved_and_stable']=True
         results['SQLite_offline_records_and_authenticated_search']=True
+        sdwan_path = '/api/v1/sdwan'
+        candidates = []
+        for name, level, topology in [('center-primary', 2, 1), ('aaa-nat3-node', 3, 1),
+                                      ('zzz-nat1-node', 1, 1), ('aaa-nat4-node', 4, 1),
+                                      ('aaa-legacy-node', 1, 0), ('aaa-no-adapter', 1, 1)]:
+            node = WS(name)
+            node.send(message(6, 0, {'version': '2.0.0', 'natLevel': level, 'udpNatType': 1,
+                                     'configPush': 1, 'sdwanPush': 1, 'sdwanTopology': topology}))
+            node.until(6, 7)
+            candidates.append(node)
+        members = [{'node': node.name, 'address': f'10.3.2.{i + 1}', 'routes': []}
+                   for i, node in enumerate(candidates)]
+        primary, nat3, nat1, nat4, legacy, _ = candidates
+        plan = {'mode': 'central', 'subnet': '10.3.2.0/24', 'center': primary.name, 'members': members}
+        status, saved = api(sdwan_path, plan, jwt)
+        assert status == 200 and saved['activeCenter'] == primary.name
+        assert json.loads(legacy.until(3, 19))['fields']['sdwan'] is None
+
+        def elected(name):
+            return api(sdwan_path, jwt=jwt)[1]['activeCenter'] == name
+
+        def report_adapter(center, *nodes):
+            for node in nodes:
+                node.send(message(6, 11, {'mode': 'central', 'center': center.name, 'links': []}))
+
+        report_adapter(primary, nat1, nat3, nat4)
+        primary.close()
+        wait(lambda: elected(nat1.name), timeout=14, what='elect NAT1 ahead of NAT3 and NAT4')
+        report_adapter(nat1, nat3, nat4)
+        nat1.close()
+        wait(lambda: elected(nat3.name), timeout=14, what='elect the remaining NAT3 member')
+        report_adapter(nat3, nat4)
+        nat3.close()
+        wait(lambda: elected(''), timeout=14, what='exclude NAT4 and members without an active adapter')
+        assert api(sdwan_path, {'subnet': plan['subnet'], 'members': []}, jwt)[0] == 200
+        for node in candidates:
+            node.close()
+        results['sdwan_election_ranks_nat_levels_and_excludes_legacy_members'] = True
         process.terminate();process.wait(timeout=6);assert process.returncode==0
         process=subprocess.Popen([str(Path(args.gateway).resolve()),'--cert',str(certs/'server.crt'),'--key',str(certs/'server.key'),
             '--bind','127.0.0.1','--max-clients','2','--heartbeat-timeout','5'],cwd=directory,env=env,stdout=output,stderr=subprocess.STDOUT)

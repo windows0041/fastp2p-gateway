@@ -43,6 +43,9 @@ static int push_config(struct connection *node) {
     json_object *fields = gw_get(config, "fields");
     if (!node->sdwan_supported)
         json_object_object_del(fields, "sdwan");
+    else if (!node->sdwan_topology &&
+             !strcmp(gw_string(gw_get(fields, "sdwan"), "Mode"), "central"))
+        json_object_object_add(fields, "sdwan", NULL);
     int result=gw_integer(config,"revision") && json_object_object_length(fields)?send_json(node,3,19,config):0;
     json_object_put(config);return result;
 }
@@ -113,6 +116,8 @@ static void unregister_node(struct connection *c) {
             g.grants[i][c->slot] = 0;
     }
     c->registered = 0;
+    free(c->sdwan_links);
+    c->sdwan_links = NULL;
     if (c->pending_http) {
         struct connection *http = c->pending_http;
         c->pending_http = NULL;
@@ -260,6 +265,114 @@ static int relay_nat_blocked(const struct connection *node, unsigned family, int
         return 0;
     unsigned level = tcp ? node->tcp_level : node->nat_level;
     return level == 4 || (!tcp && level == 7);
+}
+
+enum { SDWAN_CONNECTING, SDWAN_DIRECT, SDWAN_RELAY };
+
+static void record_sdwan_links(struct connection *c, json_object *report) {
+    json_object *links = gw_get(report, "links");
+    const char *mode = gw_string(report, "mode"), *center = gw_string(report, "center");
+    if (!c->sdwan_topology || (strcmp(mode, "mesh") && strcmp(mode, "central")) ||
+        (*center && !gw_node_valid(center)) || !json_object_is_type(links, json_type_array) ||
+        json_object_array_length(links) >= GW_SDWAN_MAX_MEMBERS)
+        return;
+    if (!c->sdwan_links)
+        c->sdwan_links = calloc(GW_SDWAN_MAX_MEMBERS - 1, sizeof(*c->sdwan_links));
+    if (!c->sdwan_links)
+        return;
+    c->sdwan_link_count = 0;
+    c->sdwan_central = !strcmp(mode, "central");
+    snprintf(c->sdwan_center, sizeof(c->sdwan_center), "%s", center);
+    c->sdwan_report_at = gw_mono_ms();
+    for (size_t i = 0; i < json_object_array_length(links); ++i) {
+        json_object *entry = json_object_array_get_idx(links, i);
+        const char *peer = gw_string(entry, "peer"), *state = gw_string(entry, "state");
+        if (!gw_node_valid(peer) || !strcmp(peer, c->node))
+            continue;
+        struct sdwan_link *link = &c->sdwan_links[c->sdwan_link_count++];
+        *link = (struct sdwan_link){0};
+        snprintf(link->peer, sizeof(link->peer), "%s", peer);
+        if (!strcmp(state, "direct")) {
+            link->state = SDWAN_DIRECT;
+            uint64_t family = gw_integer(entry, "family");
+            if (family == 4 || family == 6)
+                link->family = (unsigned)family;
+        } else if (!strcmp(state, "relay")) {
+            link->state = SDWAN_RELAY;
+            const char *relay = gw_string(entry, "relay");
+            if (gw_node_valid(relay))
+                snprintf(link->relay, sizeof(link->relay), "%s", relay);
+        }
+    }
+}
+
+static struct connection *sdwan_node(sqlite3_int64 owner, const char *name) {
+    struct connection *node = *name ? find_node(gw_node_id(name)) : NULL;
+    return node && node->owner == owner && !strcmp(node->node, name) ? node : NULL;
+}
+
+static int sdwan_report_current(const struct connection *node, int central, const char *center,
+                                uint64_t now) {
+    return node && node->sdwan_topology && node->sdwan_report_at &&
+           now - node->sdwan_report_at <= 15000 &&
+           node->sdwan_central == (unsigned)central &&
+           (!central || !strcmp(node->sdwan_center, center));
+}
+
+static unsigned sdwan_center_rank(const struct connection *node) {
+    if (relay_nat_blocked(node, GW_FAMILY_V4, 0) ||
+        (!(node->families & GW_FAMILY_V4) && relay_nat_blocked(node, GW_FAMILY_V6, 0)))
+        return 0;
+    if (node->nat_level == 6)
+        return 1; /* Public IPv4 with a measured open UDP filter. */
+    if (node->nat_level >= 1 && node->nat_level <= 3)
+        return node->nat_level + 1;
+    return node->nat_level == 5 ? 5 : 6;
+}
+
+static void elect_sdwan_center(struct connection *member, uint64_t now) {
+    json_object *plan = gw_store_sdwan(g.db, member->owner);
+    if (!plan)
+        return;
+    if (strcmp(gw_string(plan, "mode"), "central")) {
+        member->sdwan_election_at = 0;
+        json_object_put(plan);
+        return;
+    }
+    const char *active = gw_string(plan, "activeCenter");
+    struct connection *center = sdwan_node(member->owner, active);
+    if (center && center->sdwan_topology) {
+        member->sdwan_election_at = 0;
+        json_object_put(plan);
+        return;
+    }
+    /* A configuration reload briefly closes the control connection. */
+    if (!member->sdwan_election_at)
+        member->sdwan_election_at = now + 8000;
+    if (now >= member->sdwan_election_at) {
+        struct connection *best = NULL;
+        unsigned best_rank = 0;
+        json_object *members = gw_get(plan, "members");
+        for (size_t i = 0; i < json_object_array_length(members); ++i) {
+            const char *name = gw_string(json_object_array_get_idx(members, i), "node");
+            struct connection *node = sdwan_node(member->owner, name);
+            unsigned rank = sdwan_report_current(node, 1, active, now) ? sdwan_center_rank(node) : 0;
+            if (rank && (!best || rank < best_rank ||
+                         (rank == best_rank && strcmp(node->node, best->node) < 0))) {
+                best = node;
+                best_rank = rank;
+            }
+        }
+        const char *next = best ? best->node : "";
+        if (strcmp(active, next)) {
+            if (gw_store_sdwan_elect(g.db, member->owner, next))
+                fputs("Cannot save SD-WAN center election\n", stderr);
+            else
+                push_owner_sdwan(member->owner);
+            member->sdwan_election_at = now + 8000;
+        }
+    }
+    json_object_put(plan);
 }
 static unsigned observe_peer(struct lws *wsi, struct connection *c) {
     struct sockaddr_storage peer;
@@ -452,6 +565,7 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
         report_port_mapping(c, j);
         c->config_supported = gw_integer(j,"configPush") != 0;
         c->sdwan_supported = c->config_supported && gw_integer(j, "sdwanPush") != 0;
+        c->sdwan_topology = c->sdwan_supported && gw_integer(j, "sdwanTopology") == 1;
         c->restart_supported = gw_integer(j, "restart") == 1;
         c->major = major_version(c->version);
         if (gw_store_save(g.db, c, 1)) {
@@ -487,6 +601,8 @@ static int dispatch(struct connection *c, uint16_t main, uint16_t sub, const uns
             if (!strcmp(state, "failed"))
                 copy_field(c->upgrade_detail, sizeof(c->upgrade_detail), j, "detail");
         }
+    } else if (main == 6 && sub == 11) {
+        record_sdwan_links(c, j);
     } else if (main == 6 && sub == 3 && c->pending_http) {
         struct connection *http = c->pending_http;
         c->pending_http = NULL;
@@ -767,6 +883,51 @@ static void http_json(struct connection *c, int status, json_object *j) {
     const char *text = json_object_to_json_string_ext(j, JSON_C_TO_STRING_PLAIN);
     http_reply(c, status, text, strlen(text));
 }
+
+static const struct sdwan_link *sdwan_status(const struct connection *node, const char *peer,
+                                            int central, const char *center, uint64_t now) {
+    if (!sdwan_report_current(node, central, center, now))
+        return NULL;
+    for (unsigned i = 0; i < node->sdwan_link_count; ++i)
+        if (!strcmp(node->sdwan_links[i].peer, peer))
+            return &node->sdwan_links[i];
+    return NULL;
+}
+
+static void add_sdwan_link(json_object *links, const char *a, const char *b,
+                           const struct connection *left, const struct connection *right,
+                           int central, const char *center, uint64_t now) {
+    json_object *link = json_object_new_object();
+    gw_js(link, "a", a);
+    gw_js(link, "b", b);
+    const char *state = "unknown";
+    if (!left || !right)
+        state = "offline";
+    else if (!left->sdwan_topology || !right->sdwan_topology)
+        state = "upgrade";
+    else {
+        const struct sdwan_link *x = sdwan_status(left, b, central, center, now);
+        const struct sdwan_link *y = sdwan_status(right, a, central, center, now);
+        if (x && y) {
+            if (!x->state || !y->state)
+                state = "connecting";
+            else if (x->state != y->state)
+                state = "mixed";
+            else if (x->state == SDWAN_RELAY) {
+                state = "relay";
+                if (x->relay[0] && !strcmp(x->relay, y->relay))
+                    gw_js(link, "relay", x->relay);
+            } else {
+                state = "direct";
+                if (x->family && x->family == y->family)
+                    gw_ju(link, "family", x->family);
+            }
+        }
+    }
+    gw_js(link, "state", state);
+    json_object_array_add(links, link);
+}
+
 static void reply_sdwan(struct connection *c) {
     json_object *plan = gw_store_sdwan(g.db, c->owner);
     if (!plan) {
@@ -774,15 +935,41 @@ static void reply_sdwan(struct connection *c) {
         return;
     }
     json_object *members = gw_get(plan, "members");
-    for (size_t i = 0; i < json_object_array_length(members); ++i) {
+    int central = !strcmp(gw_string(plan, "mode"), "central");
+    const char *center = gw_string(plan, "activeCenter");
+    size_t count = json_object_array_length(members);
+    struct connection *nodes[GW_SDWAN_MAX_MEMBERS];
+    const char *names[GW_SDWAN_MAX_MEMBERS];
+    if (count > GW_SDWAN_MAX_MEMBERS) {
+        json_object_put(plan);
+        http_error(c, 503, 1, "invalid stored SD-WAN member list");
+        return;
+    }
+    for (size_t i = 0; i < count; ++i) {
         json_object *member = json_object_array_get_idx(members, i);
         const char *name = gw_string(member, "node");
-        struct connection *node = find_node(gw_node_id(name));
+        struct connection *node = sdwan_node(c->owner, name);
+        names[i] = name;
+        nodes[i] = node;
         json_object *config = gw_store_config(g.db, name);
-        gw_js(member, "state", !node || node->owner != c->owner ? "offline" :
-              !node->sdwan_supported ? "unsupported" : config ? gw_string(config, "state") : "queued");
+        gw_js(member, "state", !node ? "offline" : !node->sdwan_supported ? "unsupported" :
+              central && !node->sdwan_topology ? "upgrade" :
+              config ? gw_string(config, "state") : "queued");
         if (config)
             json_object_put(config);
+    }
+    json_object *links = json_object_new_array();
+    json_object_object_add(plan, "links", links);
+    uint64_t now = gw_mono_ms();
+    if (central) {
+        struct connection *hub = sdwan_node(c->owner, center);
+        for (size_t i = 0; *center && i < count; ++i)
+            if (strcmp(names[i], center))
+                add_sdwan_link(links, names[i], center, nodes[i], hub, central, center, now);
+    } else {
+        for (size_t i = 0; i < count; ++i)
+            for (size_t j = i + 1; j < count; ++j)
+                add_sdwan_link(links, names[i], names[j], nodes[i], nodes[j], central, center, now);
     }
     gw_ju(plan, "error", 0);
     http_json(c, 200, plan);
@@ -2884,6 +3071,12 @@ static void tick(lws_sorted_usec_list_t *sul) {
     (void)sul;
     gw_nat_step(&g.nat);
     uint64_t now = gw_mono_ms();
+    static uint64_t next_election;
+    sqlite3_int64 owners[GW_MAX_NODES];
+    unsigned owner_count = 0;
+    int elect = now >= next_election;
+    if (elect)
+        next_election = now + 2000;
     for (unsigned i = 0; i < g.max_nodes; ++i) {
         struct connection *c = g.nodes[i];
         if (!c)
@@ -2895,6 +3088,15 @@ static void tick(lws_sorted_usec_list_t *sul) {
         }
         if (now - c->last_rx > (uint64_t)g.timeout * 1000)
             close_node(c);
+        if (elect && c->sdwan_topology && !c->closing) {
+            unsigned owner = 0;
+            while (owner < owner_count && owners[owner] != c->owner)
+                ++owner;
+            if (owner == owner_count) {
+                owners[owner_count++] = c->owner;
+                elect_sdwan_center(c, now);
+            }
+        }
         if (c->pending_http && now > c->pending_http->deadline) {
             struct connection *http = c->pending_http;
             c->pending_http = NULL;
